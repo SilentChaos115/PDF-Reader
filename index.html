@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#0d1117" />
+    <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="manifest.json" />
-    <title>ZenReader PDF</title>
+    <title>ZenReader Gold</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <script>
@@ -16,10 +16,17 @@
         theme: {
           extend: {
             colors: {
-              gray: {
-                750: '#2d3748',
-                850: '#1a202c',
-                950: '#0d1117',
+              gold: {
+                DEFAULT: '#D4AF37',
+                light: '#F9E2AF',
+                dark: '#AA8A2E',
+                shiny: '#FFD700'
+              },
+              mblue: {
+                DEFAULT: '#72A0C1',
+                light: '#B0C4DE',
+                dark: '#4682B4',
+                shiny: '#87CEEB'
               }
             }
           }
@@ -27,22 +34,70 @@
       }
     </script>
     <style>
-      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar { width: 4px; height: 4px; }
       ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-      .dark ::-webkit-scrollbar-thumb { background: #475569; }
-      body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+      .dark ::-webkit-scrollbar-thumb { background: #D4AF37; }
+
+      body { 
+        overscroll-behavior-y: none; 
+        -webkit-tap-highlight-color: transparent; 
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background-color: #ffffff;
+      }
+      .dark body { background-color: #000000; }
+      
       .textLayer {
         position: absolute; text-align: initial; left: 0; top: 0; right: 0; bottom: 0;
         overflow: hidden; opacity: 0.2; line-height: 1.0; pointer-events: auto;
       }
       .textLayer span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
-      @keyframes slideInRight { from { opacity: 0; transform: translateX(30px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
-      @keyframes slideInLeft { from { opacity: 0; transform: translateX(-30px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
-      .animate-page-next { animation: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-page-prev { animation: slideInLeft 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .swipe-handle { width: 40px; height: 4px; background: #cbd5e1; border-radius: 2px; margin: 0 auto 8px; }
-      .dark .swipe-handle { background: #475569; }
+
+      /* Metallic Gradients */
+      .metallic-gold-text {
+        background: linear-gradient(135deg, #BF953F, #FCF6BA, #B38728, #FBF5B7, #AA771C);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-size: 200% auto;
+      }
+      .metallic-gold-bg {
+        background: linear-gradient(135deg, #BF953F 0%, #FCF6BA 45%, #B38728 50%, #FBF5B7 55%, #AA771C 100%);
+        background-size: 200% 200%;
+      }
+      .metallic-blue-text {
+        background: linear-gradient(135deg, #72A0C1, #B0C4DE, #4682B4, #E0FFFF, #72A0C1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-size: 200% auto;
+      }
+      .metallic-blue-bg {
+        background: linear-gradient(135deg, #72A0C1 0%, #B0C4DE 45%, #4682B4 50%, #E0FFFF 55%, #72A0C1 100%);
+        background-size: 200% 200%;
+      }
+
+      @keyframes shimmer {
+        0% { background-position: -200% 0; }
+        100% { background-position: 200% 0; }
+      }
+      .shimmer {
+        animation: shimmer 4s infinite linear;
+      }
+
+      /* Transitions */
+      @keyframes slideInRight { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+      @keyframes slideInLeft { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
+      .animate-page-next { animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      .animate-page-prev { animation: slideInLeft 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+      .glass-card {
+        backdrop-filter: blur(12px);
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(114, 160, 193, 0.2);
+      }
+      .dark .glass-card {
+        background: rgba(0, 0, 0, 0.7);
+        border: 1px solid rgba(212, 175, 55, 0.2);
+      }
     </style>
   <script type="importmap">
 {
@@ -55,7 +110,7 @@
 }
 </script>
 </head>
-  <body class="bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100 transition-colors duration-200">
+  <body class="bg-white dark:bg-black text-gray-900 dark:text-gray-100 transition-colors duration-200">
     <div id="root" class="h-screen w-screen overflow-hidden flex flex-col"></div>
   </body>
 </html>

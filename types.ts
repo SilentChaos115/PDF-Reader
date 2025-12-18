@@ -35,7 +35,7 @@ export interface HighlightRect {
   height: number;
 }
 
-export type HighlightStyle = 'full' | 'medium' | 'underline';
+export type HighlightStyle = 'full' | 'underline' | 'strike';
 
 export interface Highlight {
   id: string;
@@ -43,13 +43,18 @@ export interface Highlight {
   rects: HighlightRect[];
   color: string;
   text: string;
-  style?: HighlightStyle;
-  opacity?: number;
+  style: HighlightStyle;
+  opacity: number;
 }
 
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
+}
+
+export interface AudioCursor {
+  page: number;
+  sentenceIndex: number;
 }
 
 export interface StoredFileMeta {
@@ -58,6 +63,7 @@ export interface StoredFileMeta {
   lastPage: number;
   highlights: Highlight[];
   chatHistory: ChatMessage[];
+  audioCursor?: AudioCursor;
 }
 
 export enum AppView {
@@ -68,10 +74,17 @@ export enum AppView {
 
 export type GeminiModel = 'gemini-3-flash-preview' | 'gemini-3-pro-preview' | 'gemini-flash-lite-latest';
 
+export interface Section {
+  id: string;
+  name: string;
+}
+
 export interface RecentFile {
   id: string;
   name: string;
   date: number;
   size: number;
   thumbnail?: string;
+  sectionId?: string;
+  data: File;
 }

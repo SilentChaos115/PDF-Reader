@@ -8,6 +8,7 @@ interface ContextMenuProps {
   onAddNote: () => void;
   onOpenHighlighter: () => void;
   onSummarize: () => void;
+  onExplain?: () => void;
   isBookmarked: boolean;
   hasSelection: boolean;
 }
@@ -20,6 +21,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
   onAddNote,
   onOpenHighlighter,
   onSummarize,
+  onExplain,
   isBookmarked,
   hasSelection
 }) => {
@@ -39,36 +41,42 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({
     };
   }, [onClose]);
 
-  // Ensure menu stays within viewport
   const style = {
-    top: Math.min(y, window.innerHeight - (hasSelection ? 250 : 200)),
-    left: Math.min(x, window.innerWidth - 200),
+    top: Math.min(y, window.innerHeight - 300),
+    left: Math.min(x, window.innerWidth - 220),
   };
 
   return (
     <div 
       ref={menuRef}
       style={style}
-      className="fixed z-50 bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 w-52 overflow-hidden animate-in fade-in zoom-in-95 duration-100 origin-top-left"
+      className="fixed z-50 bg-white/95 dark:bg-black/95 backdrop-blur-xl rounded-2xl shadow-2xl border dark:border-gold/30 w-56 overflow-hidden animate-in fade-in zoom-in-95 duration-150 origin-top-left"
     >
-      <div className="flex flex-col py-1">
+      <div className="flex flex-col py-2">
         {hasSelection && (
-          <button onClick={onSummarize} className="px-4 py-3 text-left text-sm hover:bg-purple-50 dark:hover:bg-purple-900/20 flex items-center gap-3 dark:text-gray-200 border-b border-gray-100 dark:border-gray-700">
-             <i className="fa-solid fa-sparkles text-purple-500 w-4"></i>
-             <span className="font-semibold text-purple-600 dark:text-purple-400">Gemini Summarize</span>
-          </button>
+          <>
+            <button onClick={onSummarize} className="px-5 py-3 text-left text-sm hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 dark:text-gold/90 transition-colors">
+               <i className="fa-solid fa-sparkles text-mblue dark:text-gold w-4"></i>
+               <span className="font-bold uppercase tracking-tight">AI Summarize</span>
+            </button>
+            <button onClick={onExplain} className="px-5 py-3 text-left text-sm hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 dark:text-gold/90 transition-colors">
+               <i className="fa-solid fa-brain text-mblue dark:text-gold w-4"></i>
+               <span className="font-bold uppercase tracking-tight">AI Explain</span>
+            </button>
+            <div className="h-px bg-gray-100 dark:bg-gold/10 mx-2 my-1"></div>
+          </>
         )}
-        <button onClick={onBookmark} className="px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-3 dark:text-gray-200">
-          <i className={`${isBookmarked ? 'fa-solid text-yellow-500' : 'fa-regular text-gray-400'} fa-bookmark w-4`}></i>
-          {isBookmarked ? 'Remove Bookmark' : 'Bookmark Page'}
+        <button onClick={onBookmark} className="px-5 py-3 text-left text-sm hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 dark:text-gold/90 transition-colors">
+          <i className={`${isBookmarked ? 'fa-solid text-gold-shiny' : 'fa-regular text-gray-400'} fa-bookmark w-4`}></i>
+          <span className="font-bold uppercase tracking-tight">{isBookmarked ? 'Unmark Page' : 'Mark Page'}</span>
         </button>
-        <button onClick={onAddNote} className="px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-3 dark:text-gray-200">
-          <i className="fa-solid fa-pen-to-square text-gray-400 w-4"></i>
-          Add Note
+        <button onClick={onAddNote} className="px-5 py-3 text-left text-sm hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 dark:text-gold/90 transition-colors">
+          <i className="fa-solid fa-pen-nib text-gray-400 dark:text-gold/40 w-4"></i>
+          <span className="font-bold uppercase tracking-tight">Create Note</span>
         </button>
-        <button onClick={onOpenHighlighter} className="px-4 py-3 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-3 dark:text-gray-200 border-t dark:border-gray-700">
-          <i className="fa-solid fa-highlighter text-blue-500 w-4"></i>
-          Highlighter
+        <button onClick={onOpenHighlighter} className="px-5 py-3 text-left text-sm hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 dark:text-gold/90 transition-colors border-t dark:border-gold/10 mt-1">
+          <i className="fa-solid fa-marker text-mblue dark:text-gold-shiny w-4"></i>
+          <span className="font-bold uppercase tracking-tight">Highlighter</span>
         </button>
       </div>
     </div>

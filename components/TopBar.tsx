@@ -8,6 +8,8 @@ interface TopBarProps {
   isBookmarked: boolean;
   toggleBookmark: () => void;
   onOpenSettings: () => void;
+  isAudioActive: boolean;
+  onToggleAudio: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -17,46 +19,58 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenLibrary,
   isBookmarked,
   toggleBookmark,
-  onOpenSettings
+  onOpenSettings,
+  isAudioActive,
+  onToggleAudio
 }) => {
   return (
-    <header className="bg-white dark:bg-gray-850 shadow-sm px-4 py-3 flex items-center justify-between z-10 shrink-0 border-b dark:border-gray-700 transition-colors">
+    <header className="bg-white dark:bg-black shadow-[0_2px_10px_rgba(0,0,0,0.1)] dark:shadow-[0_2px_15px_rgba(212,175,55,0.15)] px-4 py-3 flex items-center justify-between z-10 shrink-0 border-b dark:border-gold/30 transition-colors">
       <div className="flex items-center gap-2 overflow-hidden">
         <button 
           onClick={onOpenLibrary}
-          className="bg-blue-600 hover:bg-blue-700 text-white w-9 h-9 rounded-lg flex items-center justify-center transition-colors shadow-sm" 
-          title="Library / Open File"
+          className="bg-mblue hover:metallic-blue-bg dark:bg-gold dark:metallic-gold-bg text-white dark:text-black w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-lg active:scale-95 group" 
+          title="Library / Folders"
         >
-          <i className="fa-solid fa-book"></i>
+          <i className="fa-solid fa-folder-tree group-hover:scale-110 transition-transform"></i>
         </button>
         
         {fileName ? (
            <div className="flex flex-col overflow-hidden ml-2">
-             <h1 className="text-sm font-semibold truncate dark:text-white max-w-[150px] sm:max-w-xs">{fileName}</h1>
-             <span className="text-xs text-gray-500 dark:text-gray-400">Page {pageNumber} / {numPages}</span>
+             <h1 className="text-sm font-bold truncate dark:metallic-gold max-w-[150px] sm:max-w-xs uppercase tracking-tight">{fileName}</h1>
+             <span className="text-[10px] font-bold text-gray-500 dark:text-gold/60 uppercase tracking-widest">Page {pageNumber} / {numPages}</span>
            </div>
         ) : (
-          <h1 className="text-sm font-semibold text-gray-400 dark:text-gray-500 italic ml-2">No file loaded</h1>
+          <h1 className="text-sm font-bold text-gray-400 dark:text-gold/30 italic ml-2 uppercase tracking-tighter">ZenReader</h1>
         )}
       </div>
 
       <div className="flex items-center gap-4">
          {fileName && (
-            <button 
-              onClick={toggleBookmark}
-              className={`text-lg transition-transform active:scale-95 ${isBookmarked ? 'text-yellow-500' : 'text-gray-300 dark:text-gray-600 hover:text-gray-500'}`}
-              title="Bookmark Page"
-            >
-              <i className={`${isBookmarked ? 'fa-solid' : 'fa-regular'} fa-bookmark`}></i>
-            </button>
+            <>
+              <button 
+                onClick={onToggleAudio}
+                className={`text-xl transition-all active:scale-95 ${isAudioActive ? 'text-mblue-shiny dark:text-gold-shiny animate-pulse drop-shadow-[0_0_8px_rgba(255,215,0,0.5)]' : 'text-gray-400 dark:text-gold/40 hover:text-mblue dark:hover:text-gold'}`}
+                title="Listen Mode"
+              >
+                <i className="fa-solid fa-headphones"></i>
+              </button>
+              
+              <button 
+                onClick={toggleBookmark}
+                className={`text-xl transition-all active:scale-95 ${isBookmarked ? 'text-mblue-shiny dark:text-gold-shiny drop-shadow-[0_0_8px_rgba(255,215,0,0.5)]' : 'text-gray-300 dark:text-gold/20 hover:text-mblue dark:hover:text-gold'}`}
+                title="Bookmark"
+              >
+                <i className={`${isBookmarked ? 'fa-solid' : 'fa-regular'} fa-bookmark`}></i>
+              </button>
+            </>
          )}
 
         <button 
           onClick={onOpenSettings} 
-          className="w-9 h-9 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-          title="Settings"
+          className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-900 flex items-center justify-center text-gray-600 dark:text-gold/80 hover:bg-gray-200 dark:hover:bg-gray-800 transition-all border dark:border-gold/20"
+          title="App Settings"
         >
-          <i className="fa-solid fa-gear"></i>
+          <i className="fa-solid fa-sliders"></i>
         </button>
       </div>
     </header>

@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { summarizeText, } from '../services/gemini';
 import { extractPageText } from '../services/pdfHelper';
 import { PDFDocumentProxy, Highlight } from '../types';
 
 interface NotesPanelProps {
   notes: string;
-  updateNotes: (text: string) => void;
+  updateNotes: (text: string | ((prev: string) => string)) => void;
   pdfDoc: PDFDocumentProxy | null;
   pageNumber: number;
   highlights: Highlight[];
@@ -25,6 +25,48 @@ export const NotesPanel: React.FC<NotesPanelProps> = ({
   const [aiLoading, setAiLoading] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'editor' | 'highlights'>('editor');
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = true;
+      recognitionRef.current.interimResults = true;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          }
+        }
+        if (finalTranscript) {
+           updateNotes(prev => prev ? `${prev} ${finalTranscript}` : finalTranscript);
+        }
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognitionRef.current.onerror = (e: any) => {
+        console.error("Speech Recognition Error", e);
+        setIsRecording(false);
+      };
+    }
+  }, []);
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      recognitionRef.current?.stop();
+    } else {
+      setIsRecording(true);
+      recognitionRef.current?.start();
+    }
+  };
 
   const handleSummarize = async () => {
     if (!pdfDoc) return;
@@ -79,7 +121,16 @@ export const NotesPanel: React.FC<NotesPanelProps> = ({
         {activeTab === 'editor' && (
           <div className="absolute inset-0 flex flex-col">
             <div className="p-3 flex justify-between items-center bg-gray-50 dark:bg-gray-800 border-b dark:border-gray-700">
-               <span className="text-xs text-gray-500 font-medium">Page {pageNumber}</span>
+               <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500 font-medium">Page {pageNumber}</span>
+                  <button 
+                    onClick={toggleRecording}
+                    className={`w-8 h-8 rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-200 dark:bg-gray-700 text-gray-500'}`}
+                    title={isRecording ? "Stop Dictation" : "Start Dictation"}
+                  >
+                    <i className="fa-solid fa-microphone"></i>
+                  </button>
+               </div>
                {process.env.API_KEY && (
                 <button 
                   onClick={handleSummarize}
@@ -114,7 +165,7 @@ export const NotesPanel: React.FC<NotesPanelProps> = ({
                   value={notes} 
                   onChange={(e) => updateNotes(e.target.value)}
                   className="w-full h-full min-h-[50vh] bg-transparent resize-none outline-none text-base leading-relaxed text-gray-800 dark:text-gray-200 placeholder-gray-400"
-                  placeholder="Type your notes here... Notes are automatically saved for this file name."
+                  placeholder="Type your notes here or use the microphone to dictate..."
                />
             </div>
           </div>
@@ -140,6 +191,7 @@ export const NotesPanel: React.FC<NotesPanelProps> = ({
                    </div>
                    <div className="pl-2 border-l-4" style={{ borderColor: h.color }}>
                       <p className="text-sm text-gray-700 dark:text-gray-300 italic">"{h.text}"</p>
+                      <span className="text-[9px] uppercase font-bold text-gray-400 tracking-tighter">{h.style} mode</span>
                    </div>
                  </div>
                ))

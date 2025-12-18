@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { PDFDocumentProxy, PDFPageProxy, Highlight, HighlightRect, HighlightStyle } from '../types';
 import { renderPageTextLayer } from '../services/pdfHelper';
 import { ContextMenu } from './ContextMenu';
+import { DraggableFab } from './DraggableFab';
 
 interface ReaderViewProps {
   pdfDoc: PDFDocumentProxy | null;
@@ -14,9 +15,14 @@ interface ReaderViewProps {
   onRemoveHighlight: (id: string) => void;
   onContextMenuAction: (action: 'bookmark' | 'note' | 'highlighter') => void;
   onSummarizeSelection: (text: string) => void;
+  onExplainSelection?: (text: string) => void;
   isBookmarked: boolean;
   highlighterColor: string | null;
   setHighlighterColor: (color: string | null) => void;
+  highlighterStyle: HighlightStyle;
+  setHighlighterStyle: (style: HighlightStyle) => void;
+  eraserMode: boolean;
+  setEraserMode: (mode: boolean) => void;
   isFullScreen: boolean;
   toggleFullScreen: () => void;
   onZoomChange: (scale: number) => void;
@@ -37,9 +43,14 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   onRemoveHighlight,
   onContextMenuAction,
   onSummarizeSelection,
+  onExplainSelection,
   isBookmarked,
   highlighterColor,
   setHighlighterColor,
+  highlighterStyle,
+  setHighlighterStyle,
+  eraserMode,
+  setEraserMode,
   isFullScreen,
   toggleFullScreen,
   onZoomChange,
@@ -52,25 +63,16 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const highlighterRef = useRef<HTMLDivElement>(null);
   
   const [loading, setLoading] = useState(false);
   const renderTaskRef = useRef<any>(null);
-  
-  const [eraserMode, setEraserMode] = useState(false);
   const [menuPos, setMenuPos] = useState<{x: number, y: number} | null>(null);
   const [selectedText, setSelectedText] = useState<string>('');
   
   const lastTapRef = useRef<number>(0);
-  const singleTapTimerRef = useRef<any>(null);
   const longPressTimerRef = useRef<any>(null);
-  
   const touchStartRef = useRef<{x: number, y: number} | null>(null);
   const touchEndRef = useRef<{x: number, y: number} | null>(null);
-  
-  // Highlighter swipe states
-  const hlTouchStart = useRef<number | null>(null);
-  const [hlTranslateY, setHlTranslateY] = useState(0);
 
   const prevPageRef = useRef(pageNumber);
   const [pageDims, setPageDims] = useState<{width: number, height: number} | null>(null);
@@ -79,13 +81,6 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   useEffect(() => {
     if (pdfDoc) setNumPages(pdfDoc.numPages);
   }, [pdfDoc, setNumPages]);
-
-  useEffect(() => {
-    if (!highlighterColor) {
-      setEraserMode(false);
-      setHlTranslateY(0);
-    }
-  }, [highlighterColor]);
 
   useEffect(() => {
     prevPageRef.current = pageNumber;
@@ -127,15 +122,40 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     return () => { if (renderTaskRef.current) renderTaskRef.current.cancel(); };
   }, [pdfDoc, pageNumber, scale, darkMode]);
 
+  const addHighlightFromSelection = useCallback(() => {
+    if (!highlighterColor) return;
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && selection.toString().trim()) {
+      const range = selection.getRangeAt(0);
+      const text = selection.toString().trim();
+      const rects = Array.from(range.getClientRects());
+      const containerRect = textLayerRef.current?.getBoundingClientRect();
+      if (containerRect && rects.length > 0) {
+        const mappedRects: HighlightRect[] = rects.map(r => ({
+          x: ((r.left - containerRect.left) / containerRect.width) * 100,
+          y: ((r.top - containerRect.top) / containerRect.height) * 100,
+          width: (r.width / containerRect.width) * 100,
+          height: (r.height / containerRect.height) * 100
+        }));
+        onAddHighlight(mappedRects, text, highlighterColor, highlighterStyle, 0.4);
+        selection.removeAllRanges();
+      }
+    }
+  }, [highlighterColor, highlighterStyle, onAddHighlight]);
+
   useEffect(() => {
-    const handleSelectionChange = () => {
-      if (highlighterColor) return;
-      const selection = window.getSelection();
-      setSelectedText(selection?.toString().trim() || '');
+    const handleMouseUp = () => {
+      if (highlighterColor) {
+        // Delay slightly to let selection finalize
+        setTimeout(addHighlightFromSelection, 50);
+      } else {
+        const selection = window.getSelection();
+        setSelectedText(selection?.toString().trim() || '');
+      }
     };
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => document.removeEventListener('selectionchange', handleSelectionChange);
-  }, [highlighterColor]);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => document.removeEventListener('mouseup', handleMouseUp);
+  }, [highlighterColor, addHighlightFromSelection]);
 
   useEffect(() => { 
     if (fitToScreenTrigger > 0 && containerRef.current && originalPageWidth > 0) {
@@ -149,7 +169,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 1) {
        const touch = e.touches[0];
-       longPressTimerRef.current = setTimeout(() => setMenuPos({ x: touch.clientX, y: touch.clientY }), 600); 
+       longPressTimerRef.current = setTimeout(() => {
+         const selection = window.getSelection();
+         if (!selection || !selection.toString().trim()) {
+           setMenuPos({ x: touch.clientX, y: touch.clientY });
+         }
+       }, 600); 
        touchStartRef.current = { x: touch.clientX, y: touch.clientY };
     }
   };
@@ -159,7 +184,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
         if (longPressTimerRef.current) {
             const touch = e.touches[0];
             const start = touchStartRef.current;
-            if (start && (Math.abs(touch.clientX - start.x) > 10 || Math.abs(touch.clientY - start.y) > 10)) {
+            if (start && (Math.abs(touch.clientX - start.x) > 15 || Math.abs(touch.clientY - start.y) > 15)) {
                 clearTimeout(longPressTimerRef.current);
                 longPressTimerRef.current = null;
             }
@@ -173,7 +198,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if (swipeEnabled && touchStartRef.current && touchEndRef.current && containerRef.current) {
         const xDiff = touchStartRef.current.x - touchEndRef.current.x;
         const yDiff = touchStartRef.current.y - touchEndRef.current.y;
-        if (Math.abs(xDiff) > 50 && Math.abs(xDiff) > Math.abs(yDiff)) {
+        if (Math.abs(xDiff) > 60 && Math.abs(xDiff) > Math.abs(yDiff)) {
             const container = containerRef.current;
             const isAtLeftEdge = container.scrollLeft <= 5;
             const isAtRightEdge = Math.abs((container.scrollLeft + container.clientWidth) - container.scrollWidth) <= 5;
@@ -184,26 +209,19 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     touchStartRef.current = null; touchEndRef.current = null;
   };
 
-  const handleHlTouchStart = (e: React.TouchEvent) => { hlTouchStart.current = e.touches[0].clientY; };
-  const handleHlTouchMove = (e: React.TouchEvent) => {
-    if (hlTouchStart.current === null) return;
-    const delta = e.touches[0].clientY - hlTouchStart.current;
-    if (delta > 0) setHlTranslateY(delta);
-  };
-  const handleHlTouchEnd = () => {
-    if (hlTranslateY > 100) setHighlighterColor(null);
-    else setHlTranslateY(0);
-    hlTouchStart.current = null;
-  };
-
   const direction = pageNumber > prevPageRef.current ? 'next' : 'prev';
   const animationClass = isFullScreen ? (direction === 'next' ? 'animate-page-next' : 'animate-page-prev') : '';
 
   return (
     <div 
       ref={containerRef} 
-      className="flex-1 overflow-auto flex justify-center p-4 relative bg-gray-200 dark:bg-gray-900 touch-pan-x touch-pan-y" 
-      onContextMenu={(e) => { e.preventDefault(); setMenuPos({x:e.clientX, y:e.clientY})}} 
+      className="flex-1 overflow-auto flex justify-center p-4 relative bg-gray-100 dark:bg-black touch-pan-x touch-pan-y transition-colors duration-500" 
+      onContextMenu={(e) => { 
+        if (!highlighterColor) {
+          e.preventDefault(); 
+          setMenuPos({x:e.clientX, y:e.clientY});
+        }
+      }} 
       onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchMove} 
       onClick={(e) => {
         const now = Date.now();
@@ -214,66 +232,111 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
       <div 
         ref={wrapperRef} 
         key={pageNumber} 
-        className={`relative shadow-lg transition-all ease-out origin-top ${animationClass} ${eraserMode ? 'cursor-crosshair' : ''}`} 
+        className={`relative shadow-2xl transition-all ease-out origin-top border dark:border-gold/10 rounded-sm overflow-hidden ${animationClass} ${eraserMode ? 'cursor-crosshair' : ''}`} 
         style={{ width: pageDims?.width, height: pageDims?.height }}
       >
         {loading && (
-           <div className="absolute inset-0 bg-white/50 dark:bg-gray-800/50 z-10 flex items-center justify-center backdrop-blur-sm">
-             <i className="fa-solid fa-circle-notch fa-spin text-3xl text-blue-500"></i>
+           <div className="absolute inset-0 bg-white/60 dark:bg-black/60 z-10 flex flex-col items-center justify-center backdrop-blur-md">
+             <i className="fa-solid fa-atom fa-spin text-4xl text-mblue dark:text-gold animate-pulse"></i>
+             <span className="mt-4 text-[10px] font-black dark:text-gold uppercase tracking-[0.3em] opacity-50">Illuminating Page...</span>
            </div>
         )}
-        <canvas ref={canvasRef} className="bg-white block rounded-sm pointer-events-none" style={darkMode ? { filter: 'invert(1) hue-rotate(180deg) contrast(0.85)' } : {}} />
-        <div className="absolute inset-0 z-0 pointer-events-none">
+        <canvas ref={canvasRef} className="bg-white block rounded-sm pointer-events-none" style={darkMode ? { filter: 'invert(1) hue-rotate(180deg) contrast(0.9) brightness(0.8)' } : {}} />
+        <div className="absolute inset-0 z-[5] pointer-events-none">
            {highlights.filter(h => h.page === pageNumber).map(h => h.rects.map((rect, idx) => (
-              <div key={`${h.id}-${idx}`} onClick={(e) => { if (eraserMode) { e.stopPropagation(); onRemoveHighlight(h.id); }}} className={eraserMode ? 'cursor-pointer pointer-events-auto ring-2 ring-red-500' : 'pointer-events-none'} style={{ position: 'absolute', left: `${rect.x}%`, top: `${rect.y}%`, width: `${rect.width}%`, height: `${rect.height}%`, backgroundColor: h.color, opacity: h.opacity }} />
+              <div 
+                key={`${h.id}-${idx}`} 
+                onClick={(e) => { if (eraserMode) { e.stopPropagation(); onRemoveHighlight(h.id); }}} 
+                className={eraserMode ? 'cursor-pointer pointer-events-auto ring-2 ring-red-500' : 'pointer-events-none'} 
+                style={{ 
+                    position: 'absolute', 
+                    left: `${rect.x}%`, 
+                    top: `${rect.y}%`, 
+                    width: `${rect.width}%`, 
+                    height: `${rect.height}%`, 
+                    backgroundColor: h.style === 'full' ? h.color : 'transparent',
+                    borderBottom: h.style === 'underline' ? `2.5px solid ${h.color}` : (h.style === 'strike' ? 'none' : 'none'),
+                    display: 'flex',
+                    alignItems: 'center',
+                    opacity: darkMode ? h.opacity * 1.5 : h.opacity,
+                    mixBlendMode: darkMode ? 'lighten' : 'multiply'
+                }}
+              >
+                {h.style === 'strike' && <div style={{ width: '100%', borderBottom: `2px solid ${h.color}` }} />}
+              </div>
            )))}
         </div>
-        <div ref={textLayerRef} className="textLayer" style={{ position: 'absolute', top: 0, left: 0, pointerEvents: eraserMode ? 'none' : 'auto' }} />
+        <div ref={textLayerRef} className="textLayer" style={{ position: 'absolute', top: 0, left: 0, pointerEvents: eraserMode ? 'none' : 'auto', zIndex: 10 }} />
       </div>
 
-      {/* Discrete Fullscreen Arrows when Swipe is Disabled */}
-      {isFullScreen && !swipeEnabled && (
-        <>
-          <button 
-            onClick={(e) => { e.stopPropagation(); onPageChange(pageNumber - 1); }}
-            disabled={pageNumber <= 1}
-            className="fixed bottom-6 left-6 w-14 h-14 bg-white/10 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/40 text-gray-800 dark:text-white rounded-full flex items-center justify-center transition-all z-[70] backdrop-blur-md disabled:opacity-0 active:scale-90 shadow-lg border border-white/20"
-          >
-            <i className="fa-solid fa-chevron-left text-lg"></i>
-          </button>
-          <button 
-            onClick={(e) => { e.stopPropagation(); onPageChange(pageNumber + 1); }}
-            disabled={!pdfDoc || pageNumber >= pdfDoc.numPages}
-            className="fixed bottom-6 right-6 w-14 h-14 bg-white/10 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/40 text-gray-800 dark:text-white rounded-full flex items-center justify-center transition-all z-[70] backdrop-blur-md disabled:opacity-0 active:scale-90 shadow-lg border border-white/20"
-          >
-            <i className="fa-solid fa-chevron-right text-lg"></i>
-          </button>
-        </>
-      )}
-
+      {/* Draggable Highlighter Toolbar */}
       {highlighterColor && (
-         <div 
-           ref={highlighterRef}
-           onTouchStart={handleHlTouchStart}
-           onTouchMove={handleHlTouchMove}
-           onTouchEnd={handleHlTouchEnd}
-           style={{ transform: `translateX(-50%) translateY(${hlTranslateY}px)` }}
-           className="fixed bottom-24 left-1/2 bg-white dark:bg-gray-800 px-4 pt-2 pb-4 rounded-2xl shadow-2xl z-[80] flex flex-col items-center gap-2 border dark:border-gray-700 transition-transform duration-75"
-         >
-           <div className="swipe-handle" />
-           <div className="flex items-center gap-4">
-             <label className="relative w-8 h-8 rounded-full overflow-hidden cursor-pointer shadow-sm ring-2 ring-gray-200 dark:ring-gray-600">
-               <input type="color" value={highlighterColor} onChange={(e) => setHighlighterColor(e.target.value)} className="absolute -top-2 -left-2 w-16 h-16" />
-             </label>
-             <button onClick={() => setEraserMode(!eraserMode)} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${eraserMode ? 'bg-red-500 text-white shadow-inner' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 hover:bg-gray-200'}`}>
-               <i className="fa-solid fa-eraser"></i>
-             </button>
-             <button onClick={() => setHighlighterColor(null)} className="text-gray-400 hover:text-red-500 transition-colors"><i className="fa-solid fa-times"></i></button>
-           </div>
-         </div>
+        <DraggableFab 
+          onClick={() => {}}
+          className="fixed bottom-32 left-1/2 -translate-x-1/2 bg-white/95 dark:bg-black/95 backdrop-blur-xl p-3 rounded-3xl shadow-[0_20px_60px_rgba(0,0,0,0.4)] dark:shadow-[0_20px_60px_rgba(212,175,55,0.1)] z-[80] flex flex-col items-center gap-3 border dark:border-gold/30 min-w-[240px]"
+        >
+          <div className="w-10 h-1.5 bg-gray-200 dark:bg-gold/20 rounded-full cursor-grab active:cursor-grabbing hover:bg-gold/40 transition-colors" />
+          <div className="flex items-center gap-4 w-full justify-between px-2">
+            <div className="flex items-center gap-3">
+              <label className="relative w-9 h-9 rounded-xl overflow-hidden cursor-pointer shadow-inner ring-2 ring-gray-100 dark:ring-gold/20 hover:ring-gold transition-all">
+                <input type="color" value={highlighterColor} onChange={(e) => setHighlighterColor(e.target.value)} className="absolute -top-2 -left-2 w-16 h-16 cursor-pointer" />
+              </label>
+              
+              <div className="flex bg-gray-100 dark:bg-white/5 rounded-xl p-1 gap-1 border dark:border-gold/10">
+                <button 
+                  onClick={() => setHighlighterStyle('full')} 
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${highlighterStyle === 'full' ? 'bg-mblue dark:bg-gold text-white dark:text-black shadow-md' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gold/60'}`}
+                  title="Solid"
+                >
+                  <i className="fa-solid fa-highlighter text-xs"></i>
+                </button>
+                <button 
+                  onClick={() => setHighlighterStyle('underline')} 
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${highlighterStyle === 'underline' ? 'bg-mblue dark:bg-gold text-white dark:text-black shadow-md' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gold/60'}`}
+                  title="Underline"
+                >
+                  <i className="fa-solid fa-underline text-xs"></i>
+                </button>
+                <button 
+                  onClick={() => setHighlighterStyle('strike')} 
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${highlighterStyle === 'strike' ? 'bg-mblue dark:bg-gold text-white dark:text-black shadow-md' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gold/60'}`}
+                  title="Strike"
+                >
+                  <i className="fa-solid fa-strikethrough text-xs"></i>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 border-l dark:border-gold/10 pl-3">
+              <button 
+                onClick={() => setEraserMode(!eraserMode)} 
+                className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${eraserMode ? 'bg-red-500 text-white shadow-lg ring-2 ring-red-400' : 'bg-gray-100 dark:bg-white/5 text-gray-400 dark:text-gold/40 hover:dark:text-red-400'}`}
+                title="Eraser"
+              >
+                <i className="fa-solid fa-eraser text-xs"></i>
+              </button>
+              <button onClick={() => setHighlighterColor(null)} className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-400 dark:text-gold/20 hover:text-red-500 dark:hover:text-red-500 transition-all hover:bg-red-50 dark:hover:bg-red-500/10">
+                <i className="fa-solid fa-times text-xs"></i>
+              </button>
+            </div>
+          </div>
+        </DraggableFab>
       )}
 
-      {menuPos && <ContextMenu x={menuPos.x} y={menuPos.y} onClose={() => setMenuPos(null)} isBookmarked={isBookmarked} onBookmark={() => { onContextMenuAction('bookmark'); setMenuPos(null); }} onAddNote={() => { onContextMenuAction('note'); setMenuPos(null); }} onOpenHighlighter={() => { onContextMenuAction('highlighter'); setMenuPos(null); }} onSummarize={() => { onSummarizeSelection(selectedText); setMenuPos(null); }} hasSelection={!!selectedText} />}
+      {menuPos && (
+        <ContextMenu 
+          x={menuPos.x} 
+          y={menuPos.y} 
+          onClose={() => setMenuPos(null)} 
+          isBookmarked={isBookmarked} 
+          onBookmark={() => { onContextMenuAction('bookmark'); setMenuPos(null); }} 
+          onAddNote={() => { onContextMenuAction('note'); setMenuPos(null); }} 
+          onOpenHighlighter={() => { onContextMenuAction('highlighter'); setMenuPos(null); }} 
+          onSummarize={() => { onSummarizeSelection(selectedText); setMenuPos(null); }} 
+          onExplain={() => { if(onExplainSelection) onExplainSelection(selectedText); setMenuPos(null); }}
+          hasSelection={!!selectedText} 
+        />
+      )}
     </div>
   );
 }

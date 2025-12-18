@@ -1,5 +1,7 @@
 {
-  "name": "PDF Book Reader",
+  "name": "ZenReader PDF",
   "description": "A mobile-first, dark-mode enabled PDF reader with bookmarks, notes, and AI-powered summarization.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [
+    "microphone"
+  ]
 }

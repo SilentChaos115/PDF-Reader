@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#0d1117" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="manifest.json" />
     <title>ZenReader PDF</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
@@ -23,65 +27,22 @@
       }
     </script>
     <style>
-      /* Custom scrollbar for better aesthetics */
-      ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
-        border-radius: 4px;
-      }
-      .dark ::-webkit-scrollbar-thumb {
-        background: #475569;
-      }
-      /* Disable pull-to-refresh on mobile to feel native */
-      body {
-        overscroll-behavior-y: none;
-      }
-
-      /* PDF.js Text Layer Styles */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+      .dark ::-webkit-scrollbar-thumb { background: #475569; }
+      body { overscroll-behavior-y: none; -webkit-tap-highlight-color: transparent; }
       .textLayer {
-        position: absolute;
-        text-align: initial;
-        left: 0;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        overflow: hidden;
-        opacity: 0.2; /* Minimal opacity to see selection, but not interfere */
-        line-height: 1.0;
-        pointer-events: auto; /* Allow selection */
+        position: absolute; text-align: initial; left: 0; top: 0; right: 0; bottom: 0;
+        overflow: hidden; opacity: 0.2; line-height: 1.0; pointer-events: auto;
       }
-
-      .textLayer span {
-        color: transparent;
-        position: absolute;
-        white-space: pre;
-        cursor: text;
-        transform-origin: 0% 0%;
-      }
-
-      /* Page Turn Animations */
-      @keyframes slideInRight {
-        from { opacity: 0; transform: translateX(30px) scale(0.98); }
-        to { opacity: 1; transform: translateX(0) scale(1); }
-      }
-      @keyframes slideInLeft {
-        from { opacity: 0; transform: translateX(-30px) scale(0.98); }
-        to { opacity: 1; transform: translateX(0) scale(1); }
-      }
-      
-      .animate-page-next {
-        animation: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-      }
-      
-      .animate-page-prev {
-        animation: slideInLeft 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-      }
+      .textLayer span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+      @keyframes slideInRight { from { opacity: 0; transform: translateX(30px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
+      @keyframes slideInLeft { from { opacity: 0; transform: translateX(-30px) scale(0.98); } to { opacity: 1; transform: translateX(0) scale(1); } }
+      .animate-page-next { animation: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      .animate-page-prev { animation: slideInLeft 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      .swipe-handle { width: 40px; height: 4px; background: #cbd5e1; border-radius: 2px; margin: 0 auto 8px; }
+      .dark .swipe-handle { background: #475569; }
     </style>
   <script type="importmap">
 {

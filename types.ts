@@ -1,3 +1,4 @@
+
 export interface PDFDocumentProxy {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PDFPageProxy>;
@@ -9,7 +10,6 @@ export interface PDFPageProxy {
   getViewport: (params: { scale: number }) => PDFPageViewport;
   render: (params: { canvasContext: CanvasRenderingContext2D; viewport: PDFPageViewport }) => PDFRenderTask;
   getTextContent: () => Promise<PDFTextContent>;
-  streamTextContent: (params: any) => any;
 }
 
 export interface PDFPageViewport {
@@ -29,10 +29,10 @@ export interface PDFTextContent {
 }
 
 export interface HighlightRect {
-  x: number; // Percentage 0-100
-  y: number; // Percentage 0-100
-  width: number; // Percentage 0-100
-  height: number; // Percentage 0-100
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export type HighlightStyle = 'full' | 'medium' | 'underline';
@@ -42,9 +42,14 @@ export interface Highlight {
   page: number;
   rects: HighlightRect[];
   color: string;
-  text: string; // The selected text content
+  text: string;
   style?: HighlightStyle;
   opacity?: number;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  text: string;
 }
 
 export interface StoredFileMeta {
@@ -52,6 +57,7 @@ export interface StoredFileMeta {
   notes: string;
   lastPage: number;
   highlights: Highlight[];
+  chatHistory: ChatMessage[];
 }
 
 export enum AppView {
@@ -60,16 +66,7 @@ export enum AppView {
   BOOKMARKS = 'BOOKMARKS'
 }
 
-export interface ChatMessage {
-  role: 'user' | 'model';
-  text: string;
-}
-
-export interface GoogleUser {
-  name: string;
-  email: string;
-  picture: string;
-}
+export type GeminiModel = 'gemini-3-flash-preview' | 'gemini-3-pro-preview' | 'gemini-flash-lite-latest';
 
 export interface RecentFile {
   id: string;

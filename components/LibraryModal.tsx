@@ -5,8 +5,8 @@ import { RecentFile } from '../types';
 interface LibraryModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelectFile: (file: File) => void;
-  onImportNew: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onSelectFile: (file: File) => Promise<void> | void;
+  onImportNew: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
 }
 
 export const LibraryModal: React.FC<LibraryModalProps> = ({
@@ -40,6 +40,12 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     e.stopPropagation();
     await removeFileFromLibrary(id);
     loadFiles();
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    await onImportNew(e);
+    // Refresh the list immediately after import
+    await loadFiles();
   };
 
   if (!isOpen) return null;
@@ -111,7 +117,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
           <label className="flex items-center justify-center gap-2 w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl cursor-pointer transition-colors shadow-lg shadow-blue-500/30">
              <i className="fa-solid fa-plus"></i>
              <span className="font-semibold">Open New PDF</span>
-             <input type="file" accept="application/pdf" className="hidden" onChange={onImportNew} />
+             <input type="file" accept="application/pdf" className="hidden" onChange={handleImport} />
           </label>
         </div>
       </div>

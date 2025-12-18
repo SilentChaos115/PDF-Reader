@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { chatWithDocument } from '../services/gemini';
 import { extractPageText } from '../services/pdfHelper';
-import { PDFDocumentProxy, ChatMessage } from '../types';
+import { PDFDocumentProxy, ChatMessage, GeminiModel } from '../types';
 
 interface GeminiAssistantProps {
   pdfDoc: PDFDocumentProxy | null;
@@ -10,166 +10,131 @@ interface GeminiAssistantProps {
   onClose: () => void;
   initialMessage: string | null;
   onInitialMessageHandled: () => void;
+  selectedModel: GeminiModel;
+  history: ChatMessage[];
+  onUpdateHistory: (history: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => void;
 }
 
 export const GeminiAssistant: React.FC<GeminiAssistantProps> = ({
-  pdfDoc,
-  pageNumber,
-  isOpen,
-  onClose,
-  initialMessage,
-  onInitialMessageHandled
+  pdfDoc, 
+  pageNumber, 
+  isOpen, 
+  onClose, 
+  initialMessage, 
+  onInitialMessageHandled, 
+  selectedModel,
+  history,
+  onUpdateHistory
 }) => {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'model', text: 'Hi! I can help you summarize this page or answer questions about it.' }
-  ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const hasHandledInitialRef = useRef(false);
 
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (isOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages]);
+  }, [history, isOpen]);
 
-  // Handle Initial Message (Selection Summarization)
   useEffect(() => {
-    const processInitialMessage = async () => {
-      if (isOpen && initialMessage && !loading && !hasHandledInitialRef.current) {
-        hasHandledInitialRef.current = true;
-        const prompt = `Please summarize the following text:\n\n"${initialMessage}"`;
-        
-        // Add user message to UI immediately
-        setMessages(prev => [...prev, { role: 'user', text: "Summarize this selection..." }]);
+    if (isOpen && initialMessage && !loading) {
+      const prompt = `Please summarize the following selection:\n\n"${initialMessage}"`;
+      onUpdateHistory(prev => [...prev, { role: 'user', text: "Summarize this selection..." }]);
+      (async () => {
         setLoading(true);
-
         try {
-          // We pass the selection as the context for this specific query if possible, 
-          // or just ask the model to process the prompt provided.
-          // Since chatWithDocument builds context from the PAGE, we'll append this specific request.
-          
-          if (!pdfDoc) {
-             setMessages(prev => [...prev, { role: 'model', text: "Document not loaded." }]);
-             setLoading(false);
-             onInitialMessageHandled();
-             return;
-          }
-
+          if (!pdfDoc) return;
           const page = await pdfDoc.getPage(pageNumber);
           const pageText = await extractPageText(page);
-          
-          const response = await chatWithDocument(
-            pageText || "No page text.", 
-            messages, 
-            prompt
-          );
-          
-          setMessages(prev => [...prev, { role: 'model', text: response }]);
+          const response = await chatWithDocument(pageText || "", history, prompt, selectedModel);
+          onUpdateHistory(prev => [...prev, { role: 'model', text: response }]);
         } catch (e) {
-          setMessages(prev => [...prev, { role: 'model', text: 'Error connecting to Gemini.' }]);
-        } finally {
-          setLoading(false);
-          onInitialMessageHandled();
-          // Reset ref if the modal closes? No, keep it true for this session lifecycle or depend on initialMessage change
+           onUpdateHistory(prev => [...prev, { role: 'model', text: "Sorry, I couldn't summarize that selection." }]);
+        } finally { 
+          setLoading(false); 
+          onInitialMessageHandled(); 
         }
-      }
-    };
-
-    processInitialMessage();
-  }, [isOpen, initialMessage, pdfDoc, pageNumber]); // Remove onInitialMessageHandled from dep to avoid loop
-
-  // Reset handled flag when initialMessage changes (new selection)
-  useEffect(() => {
-    if (initialMessage) {
-        hasHandledInitialRef.current = false;
+      })();
     }
-  }, [initialMessage]);
+  }, [isOpen, initialMessage, pdfDoc, pageNumber, selectedModel]);
 
   const handleSend = async () => {
     if (!input.trim() || !pdfDoc) return;
-    
-    const userMsg = input;
+    const userMsg = input; 
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    onUpdateHistory(prev => [...prev, { role: 'user', text: userMsg }]);
     setLoading(true);
-
     try {
       const page = await pdfDoc.getPage(pageNumber);
       const text = await extractPageText(page);
-      
-      const response = await chatWithDocument(
-        text || "No text on this page (might be an image).", 
-        messages, 
-        userMsg
-      );
-      
-      setMessages(prev => [...prev, { role: 'model', text: response }]);
+      const response = await chatWithDocument(text || "", history, userMsg, selectedModel);
+      onUpdateHistory(prev => [...prev, { role: 'model', text: response }]);
     } catch (e) {
-      setMessages(prev => [...prev, { role: 'model', text: 'Error connecting to Gemini.' }]);
-    } finally {
-      setLoading(false);
+      onUpdateHistory(prev => [...prev, { role: 'model', text: "I encountered an error. Please try again." }]);
+    } finally { 
+      setLoading(false); 
+    }
+  };
+
+  const clearChat = () => {
+    if (window.confirm("Clear conversation history for this PDF?")) {
+      onUpdateHistory([{ role: 'model', text: 'Hi! I can help you summarize this page or answer questions about it.' }]);
     }
   };
 
   if (!isOpen) return null;
 
+  const containerClasses = isFullscreen 
+    ? "fixed inset-0 z-[100] bg-white dark:bg-gray-950 flex flex-col transition-all duration-300"
+    : "fixed bottom-24 right-4 w-80 h-96 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border dark:border-gray-700 flex flex-col overflow-hidden z-40 animate-in slide-in-from-right-10";
+
   return (
-    <div className="fixed bottom-24 right-4 w-80 h-96 bg-white dark:bg-gray-800 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden z-40 animate-in slide-in-from-right-10 duration-300">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-teal-500 to-emerald-600 p-3 flex justify-between items-center text-white">
+    <div className={containerClasses}>
+      <div className="bg-gradient-to-r from-teal-500 to-emerald-600 p-3 flex justify-between items-center text-white shrink-0">
         <div className="flex items-center gap-2">
           <i className="fa-solid fa-spa"></i>
-          <span className="font-bold text-sm tracking-wide">Zen Assistant</span>
+          <span className="font-bold text-sm">Zen Assistant</span>
+          <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded uppercase tracking-tighter">{selectedModel.split('-')[2] || 'Flash'}</span>
         </div>
-        <button onClick={onClose} className="hover:bg-white/20 rounded-full w-6 h-6 flex items-center justify-center transition-colors">
-          <i className="fa-solid fa-times text-xs"></i>
-        </button>
+        <div className="flex items-center gap-1">
+          <button onClick={clearChat} className="hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center" title="Clear Chat">
+            <i className="fa-solid fa-trash-can text-xs"></i>
+          </button>
+          <button onClick={() => setIsFullscreen(!isFullscreen)} className="hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center">
+            <i className={`fa-solid ${isFullscreen ? 'fa-compress' : 'fa-expand'} text-xs`}></i>
+          </button>
+          <button onClick={onClose} className="hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center">
+            <i className="fa-solid fa-times text-xs"></i>
+          </button>
+        </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-gray-50 dark:bg-gray-900">
-        {messages.map((msg, idx) => (
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 dark:bg-gray-900">
+        {history.map((msg, idx) => (
           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
-              msg.role === 'user' 
-                ? 'bg-teal-600 text-white rounded-br-none' 
-                : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-bl-none shadow-sm'
+            <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow-sm ${
+              msg.role === 'user' ? 'bg-teal-600 text-white rounded-br-none' : 'bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 border dark:border-gray-700 rounded-bl-none'
             }`}>
               {msg.text}
             </div>
           </div>
         ))}
         {loading && (
-          <div className="flex justify-start">
-            <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl rounded-bl-none px-4 py-2 shadow-sm">
-               <div className="flex gap-1">
-                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
-                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-100"></div>
-                 <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce delay-200"></div>
-               </div>
-            </div>
+          <div className="flex items-center gap-2 text-gray-400 text-xs italic ml-2">
+            <i className="fa-solid fa-circle-notch fa-spin"></i>
+            Gemini is thinking...
           </div>
         )}
         <div ref={messagesEndRef}></div>
       </div>
 
-      {/* Input */}
-      <div className="p-3 bg-white dark:bg-gray-800 border-t dark:border-gray-700 flex gap-2">
+      <div className="p-4 bg-white dark:bg-gray-800 border-t dark:border-gray-700 flex gap-2 shrink-0">
         <input 
-          type="text" 
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Ask a question..."
-          className="flex-1 bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white rounded-full px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+          type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} 
+          placeholder="Ask anything..." className="flex-1 bg-gray-100 dark:bg-gray-700 text-sm rounded-full px-5 py-2.5 focus:outline-none focus:ring-2 focus:ring-teal-500 dark:text-white"
         />
-        <button 
-          onClick={handleSend}
-          disabled={loading || !input.trim()}
-          className="w-9 h-9 bg-teal-600 hover:bg-teal-700 text-white rounded-full flex items-center justify-center disabled:opacity-50 transition-colors"
-        >
+        <button onClick={handleSend} disabled={loading || !input.trim()} className="w-10 h-10 bg-teal-600 text-white rounded-full flex items-center justify-center disabled:opacity-50 hover:bg-teal-700 transition-colors">
           <i className="fa-solid fa-paper-plane text-xs"></i>
         </button>
       </div>

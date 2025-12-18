@@ -8,7 +8,6 @@ interface TopBarProps {
   isBookmarked: boolean;
   toggleBookmark: () => void;
   onOpenSettings: () => void;
-  onOpenDrive: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -18,29 +17,18 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenLibrary,
   isBookmarked,
   toggleBookmark,
-  onOpenSettings,
-  onOpenDrive
+  onOpenSettings
 }) => {
   return (
     <header className="bg-white dark:bg-gray-850 shadow-sm px-4 py-3 flex items-center justify-between z-10 shrink-0 border-b dark:border-gray-700 transition-colors">
       <div className="flex items-center gap-2 overflow-hidden">
-        {/* File Actions Dropdown (Simulated with hover group for simplicity or just separate buttons) */}
-        <div className="flex gap-2">
-            <button 
-              onClick={onOpenLibrary}
-              className="bg-blue-600 hover:bg-blue-700 text-white w-9 h-9 rounded-lg flex items-center justify-center transition-colors shadow-sm" 
-              title="Library / Open File"
-            >
-              <i className="fa-solid fa-book"></i>
-            </button>
-            <button 
-              onClick={onOpenDrive}
-              className="bg-green-600 hover:bg-green-700 text-white w-9 h-9 rounded-lg flex items-center justify-center transition-colors shadow-sm" 
-              title="Open from Google Drive"
-            >
-              <i className="fa-brands fa-google-drive"></i>
-            </button>
-        </div>
+        <button 
+          onClick={onOpenLibrary}
+          className="bg-blue-600 hover:bg-blue-700 text-white w-9 h-9 rounded-lg flex items-center justify-center transition-colors shadow-sm" 
+          title="Library / Open File"
+        >
+          <i className="fa-solid fa-book"></i>
+        </button>
         
         {fileName ? (
            <div className="flex flex-col overflow-hidden ml-2">

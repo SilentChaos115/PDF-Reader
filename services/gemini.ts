@@ -1,40 +1,32 @@
 import { GoogleGenAI } from "@google/genai";
-import { ChatMessage } from "../types";
+import { ChatMessage, GeminiModel } from "../types";
 
 const getAIClient = () => {
-  if (!process.env.API_KEY) return null;
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-export const summarizeText = async (text: string): Promise<string> => {
+export const summarizeText = async (text: string, model: GeminiModel = 'gemini-3-flash-preview'): Promise<string> => {
   const ai = getAIClient();
-  if (!ai) return "Please configure your API Key to use AI features.";
-
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: model,
       contents: `Summarize the following text from a document page concisely:\n\n${text}`,
-      config: {
-        thinkingConfig: { thinkingBudget: 0 } // Speed over depth for page summaries
-      }
     });
     return response.text || "No summary generated.";
   } catch (error) {
     console.error("Gemini Error:", error);
-    return "Error generating summary. Please try again.";
+    return "Error generating summary. Ensure your API Key is valid.";
   }
 };
 
 export const chatWithDocument = async (
   currentText: string,
   history: ChatMessage[],
-  newMessage: string
+  newMessage: string,
+  model: GeminiModel = 'gemini-3-flash-preview'
 ): Promise<string> => {
   const ai = getAIClient();
-  if (!ai) return "API Key missing.";
-
   try {
-    // Construct context
     const contextPrompt = `You are a helpful reading assistant. The user is reading a document. 
     Here is the content of the current page they are looking at:
     "${currentText.substring(0, 5000)}"
@@ -42,7 +34,7 @@ export const chatWithDocument = async (
     Answer the user's question based on this context if relevant, or general knowledge. Keep answers concise.`;
 
     const chat = ai.chats.create({
-      model: 'gemini-3-flash-preview',
+      model: model,
       config: {
         systemInstruction: contextPrompt,
       },

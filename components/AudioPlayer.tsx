@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { PDFDocumentProxy, AudioCursor } from '../types';
 import { extractPageText } from '../services/pdfHelper';
 import { saveCachedText, getCachedText } from '../services/db';
@@ -32,7 +32,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [loading, setLoading] = useState(false);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [showControls, setShowControls] = useState(false);
-  const [isScrubbing, setIsScrubbing] = useState(false); // New state for scrubber interaction
+  const [isScrubbing, setIsScrubbing] = useState(false);
   
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const silentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -47,14 +47,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     return () => clearTimeout(timeoutId);
   }, [currentIndex, pageNumber]);
 
-  // Initialize Voices with better categorization
+  // Initialize Voices
   useEffect(() => {
     const loadVoices = () => {
       const all = window.speechSynthesis.getVoices();
       const english = all
         .filter(v => v.lang.toLowerCase().startsWith('en'))
         .sort((a, b) => {
-           // Prioritize premium/natural voices
            const priority = ['neural', 'natural', 'google', 'premium', 'enhanced', 'samantha', 'daniel'];
            const aP = priority.findIndex(p => a.name.toLowerCase().includes(p));
            const bP = priority.findIndex(p => b.name.toLowerCase().includes(p));
@@ -70,45 +69,12 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  // Initialize MediaSession and Silent Audio Loop for Background Playback
+  // Initialize Silent Audio once
   useEffect(() => {
-    // 1. Silent Audio: Keeps the audio context active when the screen is off
     const audio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==");
     audio.loop = true;
     audio.volume = 0.01; 
     silentAudioRef.current = audio;
-
-    // 2. MediaSession API: Controls on lock screen
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'Imperial Narrative',
-        artist: 'ZenReader',
-        album: `Page ${pageNumber}`,
-        artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/337/337946.png', sizes: '512x512', type: 'image/png' }]
-      });
-
-      const updatePosition = () => {
-         if (navigator.mediaSession.setPositionState && sentences.length > 0) {
-             navigator.mediaSession.setPositionState({
-                 duration: sentences.length,
-                 playbackRate: settings.speed,
-                 position: Math.min(currentIndex, sentences.length - 0.1)
-             });
-         }
-      };
-
-      navigator.mediaSession.setActionHandler('play', () => { setIsPlaying(true); updatePosition(); });
-      navigator.mediaSession.setActionHandler('pause', () => setIsPlaying(false));
-      navigator.mediaSession.setActionHandler('nexttrack', handleNext);
-      navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-          if (details.seekTime !== undefined && sentences.length > 0) {
-              const newIdx = Math.min(Math.max(0, Math.floor(details.seekTime)), sentences.length - 1);
-              setCurrentIndex(newIdx);
-          }
-      });
-      navigator.mediaSession.setActionHandler('stop', () => { setIsPlaying(false); onClose(); });
-    }
 
     return () => {
       window.speechSynthesis.cancel();
@@ -119,37 +85,82 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     };
   }, []);
 
-  // Handle Play/Pause logic for Silent Loop
-  useEffect(() => {
-      if (isPlaying) {
-          silentAudioRef.current?.play().catch(e => console.warn("Background audio start failed (interaction needed)", e));
-          if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-      } else {
-          silentAudioRef.current?.pause();
-          window.speechSynthesis.pause(); 
-          if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-      }
+  // Navigation Logic Wrappers
+  const handleNext = useCallback(() => {
+    if (currentIndex < sentences.length - 1) {
+      setCurrentIndex(curr => curr + 1);
+    } else if (pageNumber < pdfDoc.numPages) {
+      onPageChange(pageNumber + 1);
+      setCurrentIndex(0);
+    }
+  }, [currentIndex, sentences.length, pageNumber, pdfDoc.numPages, onPageChange]);
+
+  const handlePrev = useCallback(() => {
+    if (currentIndex > 0) {
+      setCurrentIndex(curr => curr - 1);
+    } else if (pageNumber > 1) {
+      onPageChange(pageNumber - 1);
+      setCurrentIndex(0); 
+    }
+  }, [currentIndex, pageNumber, onPageChange]);
+
+  const handlePlayToggle = useCallback(() => {
+    const shouldPlay = !isPlaying;
+    setIsPlaying(shouldPlay);
+    
+    if (shouldPlay) {
+      // Immediate play interaction for mobile browsers
+      silentAudioRef.current?.play().catch(e => console.warn("Background audio start failed", e));
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+    } else {
+      silentAudioRef.current?.pause();
+      window.speechSynthesis.pause(); 
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+    }
   }, [isPlaying]);
 
-  // Update Lock Screen Metadata dynamically
+  // Manage MediaSession (Metadata + Handlers)
+  // Re-run whenever navigation state changes to prevent stale closures
   useEffect(() => {
-      if ('mediaSession' in navigator && sentences.length > 0) {
+    if ('mediaSession' in navigator) {
+       // Update Metadata
+       if (sentences.length > 0) {
           navigator.mediaSession.metadata = new MediaMetadata({
             title: sentences[currentIndex] ? (sentences[currentIndex].substring(0, 40) + '...') : 'Reading...',
             artist: 'ZenReader',
             album: `Page ${pageNumber} (${currentIndex + 1}/${sentences.length})`,
             artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/337/337946.png', sizes: '512x512', type: 'image/png' }]
           });
-          
-          if(navigator.mediaSession.setPositionState) {
-              navigator.mediaSession.setPositionState({
+
+          if (navigator.mediaSession.setPositionState) {
+             navigator.mediaSession.setPositionState({
                  duration: sentences.length,
                  playbackRate: settings.speed,
-                 position: currentIndex
+                 position: Math.min(currentIndex, sentences.length - 0.01)
              });
           }
-      }
-  }, [pageNumber, currentIndex, sentences]);
+       }
+
+       // Update Handlers (Crucial: These capture current state closures)
+       navigator.mediaSession.setActionHandler('play', () => { 
+          setIsPlaying(true); 
+          silentAudioRef.current?.play().catch(() => {});
+       });
+       navigator.mediaSession.setActionHandler('pause', () => {
+          setIsPlaying(false);
+          silentAudioRef.current?.pause();
+       });
+       navigator.mediaSession.setActionHandler('stop', () => { setIsPlaying(false); onClose(); });
+       navigator.mediaSession.setActionHandler('seekto', (details) => {
+          if (details.seekTime !== undefined && sentences.length > 0) {
+              const newIdx = Math.min(Math.max(0, Math.floor(details.seekTime)), sentences.length - 1);
+              setCurrentIndex(newIdx);
+          }
+      });
+      navigator.mediaSession.setActionHandler('nexttrack', handleNext);
+      navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
+    }
+  }, [currentIndex, sentences, pageNumber, settings.speed, handleNext, handlePrev, onClose]);
 
   // Load Content
   useEffect(() => {
@@ -159,20 +170,20 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         const cached = await getCachedText(fileId, pageNumber);
         if (cached) {
           setSentences(cached);
-          setCurrentIndex(cursor?.page === pageNumber ? cursor.sentenceIndex : 0);
+          // If we just changed pages, ensure index is safe
+          setCurrentIndex(curr => (cursor?.page === pageNumber ? cursor.sentenceIndex : 0));
           setLoading(false);
           return;
         }
 
         const page = await pdfDoc.getPage(pageNumber);
         const text = await extractPageText(page);
-        // Better sentence splitting regex
         const splitSentences = text.match(/[^.!?\n]+[.!?\n]+["']?|[^.!?\n]+$/g) || [text];
         const cleaned = splitSentences.map(s => s.trim().replace(/\s+/g, ' ')).filter(s => s.length > 0);
         
         await saveCachedText(fileId, pageNumber, cleaned);
         setSentences(cleaned);
-        setCurrentIndex(cursor?.page === pageNumber ? cursor.sentenceIndex : 0);
+        setCurrentIndex(0);
       } catch (e) {
         console.error("Audio Ready Error", e);
       } finally {
@@ -184,7 +195,6 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   // Reading Logic
   useEffect(() => {
-    // Only proceed if playing, we have sentences, not loading, and NOT scrubbing
     if (isPlaying && sentences.length > 0 && !loading && !isScrubbing) {
       window.speechSynthesis.cancel();
       playSentence(currentIndex);
@@ -212,43 +222,30 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       const voice = availableVoices.find(v => v.name === settings.voice);
       if (voice) utterance.voice = voice;
     } else if (availableVoices.length > 0) {
-      // Default to first available if setting not found
       utterance.voice = availableVoices[0];
     }
 
     if(window.speechSynthesis.paused) window.speechSynthesis.resume();
 
     utterance.onend = () => {
-      const nextIdx = index + 1;
-      setCurrentIndex(nextIdx);
+      // Use functional update to ensure we don't race
+      setCurrentIndex(curr => curr + 1);
     };
 
     utterance.onerror = (e) => {
-      console.error("Speech Error", e);
-      // Ensure we don't loop indefinitely on error, but try next if valid
-      if (isPlaying && !isScrubbing) setCurrentIndex(index + 1);
+      if (e.error === 'interrupted' || e.error === 'canceled') return;
+      
+      console.error("Speech Synthesis Error:", e.error);
+      if (isPlaying && !isScrubbing) {
+        setCurrentIndex(curr => {
+            const next = curr + 1;
+            return next < sentences.length ? next : curr;
+        });
+      }
     };
 
     utteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
-  };
-
-  const handleNext = () => {
-    if (currentIndex < sentences.length - 1) {
-      setCurrentIndex(currentIndex + 1);
-    } else if (pageNumber < pdfDoc.numPages) {
-      onPageChange(pageNumber + 1);
-      setCurrentIndex(0);
-    }
-  };
-
-  const handlePrev = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
-    } else if (pageNumber > 1) {
-      onPageChange(pageNumber - 1);
-      setCurrentIndex(0); 
-    }
   };
 
   // Scrubber Handlers
@@ -258,16 +255,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 
   const handleSeekStart = () => {
     setIsScrubbing(true);
-    // Pause speech immediately while scrubbing to prevent stuttering audio
     window.speechSynthesis.cancel(); 
   };
 
   const handleSeekEnd = () => {
     setIsScrubbing(false);
-    // The useEffect will react to isScrubbing changing to false and trigger playback if isPlaying is true
   };
 
-  // Organize voices for display
   const naturalVoices = availableVoices.filter(v => v.name.match(/neural|natural|premium|enhanced/i));
   const standardVoices = availableVoices.filter(v => !v.name.match(/neural|natural|premium|enhanced/i));
 
@@ -388,7 +382,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
            </button>
 
            <button 
-             onClick={() => setIsPlaying(!isPlaying)}
+             onClick={handlePlayToggle}
              className="w-20 h-20 flex items-center justify-center metallic-blue-bg dark:metallic-gold-bg text-white dark:text-black rounded-[2rem] shadow-[0_8px_30px_rgba(0,0,0,0.3)] dark:shadow-[0_8px_30px_rgba(212,175,55,0.3)] transition-all active:scale-95 group relative overflow-hidden"
            >
              <div className="absolute inset-0 bg-white/30 translate-y-full group-hover:translate-y-0 transition-transform duration-300 rounded-[2rem]"></div>

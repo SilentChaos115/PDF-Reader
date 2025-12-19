@@ -17,14 +17,16 @@ export const categorizeFileName = async (filename: string): Promise<string> => {
   try {
     const prompt = `Classify this file based ONLY on its name: "${filename}"
     
+    If it sounds like a book, novel, textbook, or research paper, use "Education" or "Personal".
+    
     Categories:
-    - Finance (invoices, taxes, banking)
-    - Medical (health, doctors, prescriptions)
-    - Work (business, contracts, resumes)
-    - Education (school, books, homework)
-    - Technology (manuals, software, guides)
-    - Travel (tickets, bookings)
-    - Personal (photos, letters, journals)
+    - Finance (invoices, taxes, banking, receipts)
+    - Medical (health, doctors, prescriptions, scans)
+    - Work (business, contracts, resumes, legal, proposals)
+    - Education (school, books, novels, textbooks, homework, research, math, science, history)
+    - Technology (manuals, software, guides, specs, code)
+    - Travel (tickets, bookings, passports)
+    - Personal (photos, letters, journals, recipes)
     
     Return JSON: { "category": "CategoryName" }`;
 

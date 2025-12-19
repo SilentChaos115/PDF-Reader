@@ -151,19 +151,19 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       if (n.match(/invoice|bill|receipt|tax|bank|stmt|statement|finance|budget|cost|price|quote|order|purchase|payment|paystub|salary|expense|insurance|folio|trans|check|card/)) return 'Finance';
       
       // 2. Work / Legal (Strict)
-      if (n.match(/resume|cv|job|career|contract|agreement|nda|legal|law|proposal|brief|meeting|agenda|minutes|report|strategy|plan|project|presentation|slide|pitch|deck|memo|draft|signed|employment|offer|letter/)) return 'Work';
+      if (n.match(/resume|cv|job|career|contract|agreement|nda|legal|law|proposal|brief|meeting|agenda|minutes|report|strategy|plan|project|presentation|slide|pitch|deck|memo|draft|signed|employment|offer|letter|business/)) return 'Work';
       
       // 3. Medical (Strict)
       if (n.match(/medical|health|doctor|dr\.|clinic|hospital|rx|prescript|lab|result|diagnosis|scan|xray|mri|patient|benefit|coverage|claim|appointment|vaccine|immunization/)) return 'Medical';
       
       // 4. Technology / Manuals
-      if (n.match(/manual|guide|instruction|setup|install|config|tech|spec|data|code|software|app|user|developer|api|sdk|network|server|log|error|debug|diagram|schematic/)) return 'Technology';
+      if (n.match(/manual|guide|instruction|setup|install|config|tech|spec|data|code|software|app|user|developer|api|sdk|network|server|log|error|debug|diagram|schematic|programming|python|javascript|java|cpp|html|css/)) return 'Technology';
       
       // 5. Travel
       if (n.match(/ticket|flight|hotel|booking|reserv|itinerary|travel|trip|boarding|pass|visa|passport|confirm|airline|rail|train|bus/)) return 'Travel';
       
-      // 6. Education
-      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|book|chapter|exam|test|quiz/)) return 'Education';
+      // 6. Education & Books (Expanded)
+      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|book|chapter|exam|test|quiz|math|science|physics|chem|biology|history|geography|english|lit|novel|fiction|story|textbook|workbook|volume|edition|ed\.|vol\./)) return 'Education';
       
       // 7. Personal (Loose)
       if (n.match(/recipe|food|cook|diet|menu|photo|img|pic|dsc|screen|shot|family|letter|note|journal|diary|personal|home|house|apt|apartment|rent|lease/)) return 'Personal';

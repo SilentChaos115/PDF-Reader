@@ -8,6 +8,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { GeminiAssistant } from './components/GeminiAssistant';
 import { LibraryModal } from './components/LibraryModal';
 import { AudioPlayer } from './components/AudioPlayer';
+import { DraggableFab } from './components/DraggableFab';
 import { loadPDF, generatePDFThumbnail } from './services/pdfHelper';
 import { saveFileToLibrary, updateFileDate, updateFileSection } from './services/db';
 import { PDFDocumentProxy, AppView, Highlight, GeminiModel, ChatMessage, AudioCursor, HighlightStyle } from './types';
@@ -224,6 +225,17 @@ export default function App() {
         onFitToScreen={() => setFitToScreenTrigger(prev => prev + 1)}
         onOpenAI={() => setIsGeminiChatOpen(true)}
       />
+
+      {/* Gemini Overlay Button (Draggable) */}
+      {enableGemini && pdfDoc && !isGeminiChatOpen && (
+        <DraggableFab 
+          onClick={() => setIsGeminiChatOpen(true)}
+          className="fixed bottom-24 right-4 z-40 w-14 h-14 rounded-full metallic-blue-bg dark:metallic-gold-bg shadow-2xl flex items-center justify-center text-white dark:text-black hover:scale-110 active:scale-95 transition-transform"
+        >
+           <i className="fa-solid fa-sparkles text-xl animate-pulse"></i>
+           <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></span>
+        </DraggableFab>
+      )}
 
       {/* Overlays / Modals */}
       <SettingsModal 

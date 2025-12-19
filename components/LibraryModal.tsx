@@ -1,5 +1,7 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { getRecentFiles, removeFileFromLibrary, getSections, saveSection, deleteSection, updateFileSection } from '../services/db';
+import React, { useEffect, useState } from 'react';
+import { getRecentFiles, removeFileFromLibrary, getSections, saveSection, deleteSection, updateFileSection, deleteFiles } from '../services/db';
+import { loadPDF, extractTextFromDocument } from '../services/pdfHelper';
+import { categorizeFileName } from '../services/gemini';
 import { RecentFile, Section } from '../types';
 
 interface LibraryModalProps {
@@ -8,6 +10,8 @@ interface LibraryModalProps {
   onSelectFile: (file: File) => Promise<void> | void;
   onImportNew: (e: React.ChangeEvent<HTMLInputElement>, sectionId?: string) => Promise<void>;
 }
+
+type SortOption = 'date' | 'name' | 'size';
 
 export const LibraryModal: React.FC<LibraryModalProps> = ({
   isOpen,
@@ -18,15 +22,24 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const [files, setFiles] = useState<RecentFile[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['uncategorized', 'recently_opened']));
-  const [isManagingSections, setIsManagingSections] = useState(false);
-  const [newSectionName, setNewSectionName] = useState('');
+  
+  // UI State
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['recently_opened']));
+  const [activeTab, setActiveTab] = useState<'all' | 'folders'>('all');
+  const [showCreateFolderInput, setShowCreateFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [sortBy, setSortBy] = useState<SortOption>('date');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Selection & Batch Operations
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBatchMove, setShowBatchMove] = useState(false);
+  const [newFolderInBatch, setNewFolderInBatch] = useState('');
 
-  // Context Menu State
-  const [fileMenu, setFileMenu] = useState<{ id: string, x: number, y: number } | null>(null);
-  const [folderMenu, setFolderMenu] = useState<{ id: string, x: number, y: number } | null>(null);
-  const [isAssigningFolder, setIsAssigningFolder] = useState(false);
-  const longPressTimer = useRef<any>(null);
+  // Auto Organization State
+  const [isOrganizing, setIsOrganizing] = useState(false);
+  const [organizeProgress, setOrganizeProgress] = useState({ current: 0, total: 0, status: '' });
 
   const loadData = async () => {
     setLoading(true);
@@ -35,407 +48,555 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       setFiles(recents);
       setSections(storedSections);
       
+      // Auto-expand sections that have files if in folder view
       const newExpanded = new Set(expandedSections);
-      recents.forEach(f => {
-        if (f.sectionId) newExpanded.add(f.sectionId);
-      });
+      storedSections.forEach(s => newExpanded.add(s.id));
+      newExpanded.add('uncategorized');
       setExpandedSections(newExpanded);
-    } catch (e) {
-      console.error("Failed to load library", e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error("Failed to load library", e); } finally { setLoading(false); }
   };
 
-  useEffect(() => {
-    if (isOpen) loadData();
-    const handleGlobalClick = () => {
-      setFileMenu(null);
-      setFolderMenu(null);
-      setIsAssigningFolder(false);
-    };
-    window.addEventListener('click', handleGlobalClick);
-    return () => window.removeEventListener('click', handleGlobalClick);
+  useEffect(() => { 
+    if (isOpen) { 
+      loadData(); 
+      setIsSelectionMode(false); 
+      setSelectedIds(new Set()); 
+      setShowBatchMove(false);
+      setShowCreateFolderInput(false);
+      setSearchQuery(''); // Reset search on open
+    } 
   }, [isOpen]);
 
-  const handleDeleteFile = async (id: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    if (window.confirm("Remove document permanently from your Imperial Vault?")) {
-      await removeFileFromLibrary(id);
-      loadData();
-    }
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>, sectionId?: string) => {
+    if (e.target.files?.length) { setLoading(true); await onImportNew(e, sectionId); await loadData(); }
   };
 
   const toggleSection = (id: string) => {
     const newSet = new Set(expandedSections);
-    if (newSet.has(id)) newSet.delete(id);
-    else newSet.add(id);
+    newSet.has(id) ? newSet.delete(id) : newSet.add(id);
     setExpandedSections(newSet);
   };
-
-  const handleAddSection = async () => {
-    if (!newSectionName.trim()) return;
-    const section = { id: Date.now().toString(), name: newSectionName.trim() };
-    await saveSection(section);
-    setNewSectionName('');
-    loadData();
+  
+  const handleCreateFolder = async (name: string) => {
+    if (name.trim()) { 
+      const newSection = { id: Date.now().toString(), name: name.trim() };
+      await saveSection(newSection); 
+      await loadData();
+      return newSection.id;
+    }
+    return null;
   };
-
-  const handleDeleteSection = async (id: string) => {
-    if (window.confirm("Delete this folder? Documents will return to Unclassified archives.")) {
-      await deleteSection(id);
-      loadData();
+  
+  const handleManualCreateFolder = async () => {
+    if (newFolderName.trim()) {
+        await handleCreateFolder(newFolderName);
+        setNewFolderName('');
+        setShowCreateFolderInput(false);
+        setActiveTab('folders'); // Switch to folder view to see it
     }
   };
 
-  const moveFile = async (fileId: string, sectionId: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    await updateFileSection(fileId, sectionId);
-    setFileMenu(null);
-    setIsAssigningFolder(false);
-    loadData();
+  const handleDeleteSection = async (id: string) => {
+     if (window.confirm("Dissolve this folder? Documents will be returned to Uncategorized.")) { await deleteSection(id); loadData(); }
   };
 
-  const handleLongPressFile = (e: React.TouchEvent | React.MouseEvent, id: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const x = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+  const handleDeleteSingleFile = async (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      if (window.confirm("Delete this document?")) {
+          await removeFileFromLibrary(id);
+          await loadData();
+      }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size && window.confirm(`Permanently expunge ${selectedIds.size} documents?`)) {
+       setLoading(true); 
+       try {
+         await deleteFiles(Array.from(selectedIds) as string[]);
+       } catch (e) {
+         console.error("Batch delete failed", e);
+       }
+       await loadData(); 
+       setIsSelectionMode(false); 
+       setSelectedIds(new Set());
+    }
+  };
+
+  const handleBatchMove = async (targetSectionId: string) => {
+    if (selectedIds.size === 0) return;
+    setLoading(true);
+    for (const id of Array.from(selectedIds) as string[]) {
+        await updateFileSection(id, targetSectionId);
+    }
+    await loadData();
+    setShowBatchMove(false);
+    setIsSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleCreateAndMove = async () => {
+    if(!newFolderInBatch.trim()) return;
+    const newId = await handleCreateFolder(newFolderInBatch);
+    if(newId) {
+      await handleBatchMove(newId);
+      setNewFolderInBatch('');
+    }
+  };
+
+  // --- RELIABLE SORTING ENGINE ---
+  const determineCategory = async (filename: string): Promise<string> => {
+      const n = filename.toLowerCase();
+
+      // 1. Finance (Strict)
+      if (n.match(/invoice|bill|receipt|tax|bank|stmt|statement|finance|budget|cost|price|quote|order|purchase|payment|paystub|salary|expense|insurance|folio|trans|check|card/)) return 'Finance';
+      
+      // 2. Work / Legal (Strict)
+      if (n.match(/resume|cv|job|career|contract|agreement|nda|legal|law|proposal|brief|meeting|agenda|minutes|report|strategy|plan|project|presentation|slide|pitch|deck|memo|draft|signed|employment|offer|letter/)) return 'Work';
+      
+      // 3. Medical (Strict)
+      if (n.match(/medical|health|doctor|dr\.|clinic|hospital|rx|prescript|lab|result|diagnosis|scan|xray|mri|patient|benefit|coverage|claim|appointment|vaccine|immunization/)) return 'Medical';
+      
+      // 4. Technology / Manuals
+      if (n.match(/manual|guide|instruction|setup|install|config|tech|spec|data|code|software|app|user|developer|api|sdk|network|server|log|error|debug|diagram|schematic/)) return 'Technology';
+      
+      // 5. Travel
+      if (n.match(/ticket|flight|hotel|booking|reserv|itinerary|travel|trip|boarding|pass|visa|passport|confirm|airline|rail|train|bus/)) return 'Travel';
+      
+      // 6. Education
+      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|book|chapter|exam|test|quiz/)) return 'Education';
+      
+      // 7. Personal (Loose)
+      if (n.match(/recipe|food|cook|diet|menu|photo|img|pic|dsc|screen|shot|family|letter|note|journal|diary|personal|home|house|apt|apartment|rent|lease/)) return 'Personal';
+
+      // 8. AI Fallback (Lightweight)
+      try {
+         const aiCategory = await categorizeFileName(filename);
+         if (aiCategory && aiCategory !== 'General') return aiCategory;
+      } catch (e) {
+         console.log("AI Sort skipped");
+      }
+
+      // 9. Default
+      return 'General';
+  };
+
+  const handleAutoOrganize = async () => {
+    // 1. Force refresh from DB to get latest state
+    const latestFiles = await getRecentFiles();
     
-    // Adjust context menu position to avoid clipping
-    const menuWidth = 240;
-    const adjustedX = Math.min(x, window.innerWidth - menuWidth - 20);
+    // 2. Filter for files that are explicitly uncategorized OR null OR empty string
+    const uncategorized = latestFiles.filter(f => !f.sectionId || f.sectionId === 'uncategorized' || f.sectionId === '');
     
-    setFileMenu({ id, x: adjustedX, y });
-    setIsAssigningFolder(false);
+    if (uncategorized.length === 0) {
+      // User feedback is crucial here
+      const shouldReorganizeAll = window.confirm("All files are already sorted! Do you want to re-check ALL files in the library? (This might move files you manually organized)");
+      if (!shouldReorganizeAll) return;
+    }
+
+    // If re-organizing all, use all files. Otherwise use uncategorized.
+    const filesToProcess = uncategorized.length === 0 ? latestFiles : uncategorized;
+
+    setIsOrganizing(true);
+    setActiveTab('folders'); // Switch view so user sees the result
+    
+    // Refresh sections to ensure we don't create duplicates
+    const latestSections = await getSections();
+    const sectionMap = new Map<string, string>(); 
+    latestSections.forEach(s => sectionMap.set(s.name.toLowerCase(), s.id));
+    
+    let movedCount = 0;
+
+    try {
+      for (let i = 0; i < filesToProcess.length; i++) {
+        const file = filesToProcess[i];
+        
+        // Update UI
+        setOrganizeProgress({ 
+            current: i + 1, 
+            total: filesToProcess.length, 
+            status: `Sorting: ${file.name}` 
+        });
+
+        try {
+          // Determine Category
+          const categoryName = await determineCategory(file.name);
+          const catKey = categoryName.toLowerCase();
+
+          // Get or Create Section ID
+          let targetSectionId = sectionMap.get(catKey);
+          
+          if (!targetSectionId) {
+             // Create new section
+             targetSectionId = Date.now().toString() + Math.floor(Math.random() * 1000);
+             const newSection = { id: targetSectionId, name: categoryName };
+             await saveSection(newSection);
+             
+             // Update local map
+             sectionMap.set(catKey, targetSectionId);
+             
+             // Update React state immediately to avoid UI flicker
+             setSections(prev => [...prev, newSection]);
+          }
+
+          // Move File only if it's not already there
+          if (file.sectionId !== targetSectionId) {
+            await updateFileSection(file.id, targetSectionId);
+            movedCount++;
+          }
+          
+          // Artificial delay for UX (so the user sees the progress bar moving)
+          await new Promise(r => setTimeout(r, 50));
+
+        } catch (err) {
+          console.error(`Failed to sort ${file.name}`, err);
+        }
+      }
+      
+      // Final Refresh
+      await loadData();
+      
+      // Expand all created folders
+      const allSectionIds = new Set(expandedSections);
+      sectionMap.forEach(id => allSectionIds.add(id));
+      setExpandedSections(allSectionIds);
+
+      // Success Message
+      setOrganizeProgress(prev => ({ ...prev, status: "Complete!" }));
+      setTimeout(() => {
+          setIsOrganizing(false);
+          // Only alert if we actually did something, otherwise it feels like it didn't work
+          if (movedCount > 0) {
+             alert(`Successfully organized ${movedCount} documents.`);
+          } else {
+             alert("Analysis complete. No changes were necessary.");
+          }
+      }, 500);
+
+    } catch (e) {
+      console.error("Critical Sort Error", e);
+      setIsOrganizing(false);
+      alert("Sort encountered an error. Please try again.");
+    }
+  };
+  // ------------------------------
+
+  const getFilteredFiles = () => {
+    if (!searchQuery) return files;
+    const lowerQuery = searchQuery.toLowerCase();
+    return files.filter(f => f.name.toLowerCase().includes(lowerQuery));
   };
 
-  const handleLongPressFolder = (e: React.TouchEvent | React.MouseEvent, id: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const x = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
-    const y = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-    setFolderMenu({ id, x, y });
+  const getSortedFiles = (fileList: RecentFile[]) => {
+    return [...fileList].sort((a, b) => {
+      if (sortBy === 'name') return a.name.localeCompare(b.name);
+      if (sortBy === 'size') return b.size - a.size;
+      return b.date - a.date;
+    });
   };
 
-  const handleFileTouchStart = (e: React.TouchEvent, id: string) => {
-    longPressTimer.current = setTimeout(() => handleLongPressFile(e, id), 600);
-  };
+  const renderFileCard = (file: RecentFile) => {
+    const isSelected = selectedIds.has(file.id);
+    return (
+      <div 
+        key={file.id}
+        onClick={() => isSelectionMode ? (selectedIds.has(file.id) ? selectedIds.delete(file.id) : selectedIds.add(file.id)) && setSelectedIds(new Set(selectedIds)) : (onSelectFile(file.data as any), onClose())}
+        className={`group relative flex flex-col aspect-[3/4] bg-white dark:bg-gray-800 rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 cursor-pointer ring-1 ring-black/5 dark:ring-white/10 ${isSelected ? 'ring-4 ring-mblue dark:ring-gold scale-95' : ''}`}
+      >
+        <div className="flex-1 bg-gray-100 dark:bg-gray-900 relative overflow-hidden">
+          {file.thumbnail ? (
+            <img src={file.thumbnail} className={`w-full h-full object-cover transition-all duration-700 ${isSelected ? 'opacity-50 grayscale' : 'group-hover:scale-110 opacity-90 group-hover:opacity-100'}`} />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center"><i className="fa-solid fa-file-pdf text-4xl text-gray-300 dark:text-gray-700"></i></div>
+          )}
+          
+          {isSelectionMode && (
+             <div className={`absolute top-3 right-3 w-6 h-6 rounded-full flex items-center justify-center transition-all shadow-lg ${isSelected ? 'bg-mblue dark:bg-gold text-white dark:text-black scale-110' : 'bg-black/40 border-2 border-white/50'}`}>
+                {isSelected && <i className="fa-solid fa-check text-[10px]"></i>}
+             </div>
+          )}
 
-  const handleFolderTouchStart = (e: React.TouchEvent, id: string) => {
-    longPressTimer.current = setTimeout(() => handleLongPressFolder(e, id), 600);
-  };
+          {!isSelectionMode && (
+             <button 
+                onClick={(e) => handleDeleteSingleFile(e, file.id)}
+                className="absolute top-2 right-2 w-8 h-8 rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center shadow-md hover:scale-110"
+                title="Delete File"
+             >
+                <i className="fa-solid fa-trash-can text-xs"></i>
+             </button>
+          )}
 
-  const handleTouchEnd = () => {
-    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+        </div>
+        <div className="p-4 bg-white dark:bg-gray-850 backdrop-blur-xl border-t dark:border-white/5">
+          <h3 className="text-xs font-serif font-bold dark:text-gray-100 truncate">{file.name}</h3>
+          <div className="flex justify-between items-center mt-2">
+            <span className="text-[9px] text-gray-500 uppercase tracking-wider font-sans">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+            {file.sectionId && file.sectionId !== 'uncategorized' && (
+               <i className="fa-solid fa-folder text-[9px] text-mblue dark:text-gold opacity-70"></i>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (!isOpen) return null;
 
-  const groupedFiles = {
-    uncategorized: files.filter(f => !f.sectionId || f.sectionId === 'uncategorized')
-  };
+  const currentFiles = getFilteredFiles();
+  const sortedAllFiles = getSortedFiles(currentFiles);
   
-  sections.forEach(s => {
-    groupedFiles[s.id] = files.filter(f => f.sectionId === s.id);
-  });
-
-  const recentlyOpened = files.slice(0, 4);
+  // Group only the filtered files to avoid confusion when searching
+  const groupedFiles: Record<string, RecentFile[]> = { 
+    uncategorized: getSortedFiles(currentFiles.filter(f => !f.sectionId || f.sectionId === 'uncategorized')) 
+  };
+  sections.forEach(s => groupedFiles[s.id] = getSortedFiles(currentFiles.filter(f => f.sectionId === s.id)));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
-      <div className="bg-white dark:bg-black rounded-3xl shadow-[0_0_50px_rgba(212,175,55,0.2)] w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden border dark:border-gold/30 animate-in zoom-in-95 duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in">
+      <div className="bg-paper dark:bg-darkbg w-full h-full md:h-[90vh] md:w-[90vw] md:max-w-6xl md:rounded-[32px] shadow-2xl flex flex-col overflow-hidden relative border border-white/10 dark:border-white/5">
         
         {/* Header */}
-        <div className="p-6 border-b dark:border-gold/20 flex justify-between items-center bg-gray-50 dark:bg-gray-950">
-          <div>
-            <h2 className="text-2xl font-black dark:metallic-gold flex items-center gap-3 uppercase tracking-tighter italic">
-              <i className="fa-solid fa-gem animate-shine"></i>
-              Imperial Vault
-            </h2>
+        <div className="px-6 py-5 flex flex-col md:flex-row gap-4 justify-between items-center bg-white/50 dark:bg-black/50 backdrop-blur-xl border-b border-gray-100 dark:border-white/5 sticky top-0 z-10">
+          <div className="flex items-center gap-4 w-full md:w-auto">
+            <h2 className="text-2xl font-serif font-bold dark:text-gold tracking-tight whitespace-nowrap">Archives</h2>
+            
+            {/* Search Input */}
+            <div className="relative flex-1 md:w-64">
+               <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+               <input 
+                  type="text" 
+                  placeholder="Search documents..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-gray-100/50 dark:bg-white/5 border border-transparent focus:border-mblue dark:focus:border-gold rounded-xl py-2 pl-9 pr-3 text-xs outline-none transition-all"
+               />
+               {searchQuery && (
+                 <button onClick={() => setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500">
+                    <i className="fa-solid fa-times text-xs"></i>
+                 </button>
+               )}
+            </div>
           </div>
-          <div className="flex gap-3">
-            <button 
-              onClick={() => setIsManagingSections(!isManagingSections)}
-              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all uppercase tracking-widest flex items-center gap-2 ${isManagingSections ? 'bg-mblue text-white shadow-mblue/40 shadow-lg' : 'bg-gray-200 dark:bg-gray-900 text-gray-600 dark:text-gold/60 hover:dark:text-gold'}`}
-            >
-              <i className="fa-solid fa-folder-tree"></i>
-              Folders
-            </button>
-            <button onClick={onClose} className="w-10 h-10 rounded-xl flex items-center justify-center text-gray-400 dark:text-gold/40 hover:dark:bg-red-500/20 hover:dark:text-red-500 transition-all">
-              <i className="fa-solid fa-times"></i>
-            </button>
-          </div>
-        </div>
-
-        {/* Library Content */}
-        <div className="flex-1 overflow-y-auto p-6 bg-gray-50/50 dark:bg-black space-y-8 pb-32">
-          {loading ? (
-             <div className="flex flex-col items-center justify-center py-20 gap-4">
-               <i className="fa-solid fa-atom fa-spin text-mblue dark:text-gold text-4xl"></i>
-               <span className="text-xs font-bold dark:text-gold/40 uppercase tracking-widest">Opening Vault...</span>
-             </div>
-          ) : (
-            <>
-              {/* Folders Management UI */}
-              {isManagingSections && (
-                <div className="bg-white dark:bg-gray-900 p-5 rounded-2xl border-2 dark:border-gold/20 animate-in slide-in-from-top-4 shadow-xl">
-                  <h3 className="text-sm font-black dark:text-gold mb-4 flex items-center gap-2 uppercase tracking-widest">
-                    <i className="fa-solid fa-plus-circle text-mblue dark:text-gold"></i> Forge New Folder
-                  </h3>
-                  <div className="flex gap-3">
-                    <input 
-                      type="text" 
-                      value={newSectionName}
-                      onChange={(e) => setNewSectionName(e.target.value)}
-                      placeholder="Folder name..."
-                      className="flex-1 bg-gray-100 dark:bg-black border-2 dark:border-gold/10 rounded-xl px-4 py-3 text-sm dark:text-white outline-none focus:ring-2 focus:ring-mblue dark:focus:ring-gold transition-all"
-                    />
-                    <button onClick={handleAddSection} className="bg-mblue dark:metallic-gold-bg text-white dark:text-black px-6 py-3 rounded-xl text-sm font-bold shadow-lg uppercase tracking-widest">Create</button>
-                  </div>
-                </div>
-              )}
-
-              {/* RECENTLY OPENED SECTION */}
-              {recentlyOpened.length > 0 && (
-                <div className="space-y-4">
-                  <div 
-                    onClick={() => toggleSection('recently_opened')}
-                    className={`flex items-center gap-3 cursor-pointer group transition-all ${expandedSections.has('recently_opened') ? 'dark:metallic-gold opacity-100' : 'opacity-40 hover:opacity-100'}`}
-                  >
-                    <i className="fa-solid fa-clock-rotate-left"></i>
-                    <h3 className="text-sm font-black uppercase tracking-[0.2em] italic">Recently Accessed</h3>
-                    <div className="h-px flex-1 bg-gray-200 dark:bg-gold/10"></div>
-                  </div>
-                  
-                  {expandedSections.has('recently_opened') && (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 animate-in slide-in-from-top-2">
-                       {recentlyOpened.map(file => (
-                         <div 
-                            key={`recent-${file.id}`}
-                            onClick={() => { onSelectFile(file.data as any); onClose(); }}
-                            onContextMenu={(e) => handleLongPressFile(e, file.id)}
-                            onTouchStart={(e) => handleFileTouchStart(e, file.id)}
-                            onTouchEnd={handleTouchEnd}
-                            className="group relative flex flex-col bg-white dark:bg-gray-900 rounded-2xl overflow-hidden border-2 border-transparent hover:border-mblue dark:hover:border-gold shadow-md hover:shadow-2xl cursor-pointer transition-all h-64"
-                         >
-                            <div className="flex-1 bg-gray-200 dark:bg-black flex items-center justify-center overflow-hidden relative">
-                              {file.thumbnail ? (
-                                <img src={file.thumbnail} alt={file.name} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all duration-700" />
-                              ) : (
-                                <i className="fa-solid fa-file-pdf text-4xl text-gray-300 dark:text-gold/10"></i>
-                              )}
-                            </div>
-                            <div className="p-3 bg-white dark:bg-gray-950">
-                              <h3 className="text-[11px] font-black dark:text-gold/90 truncate uppercase tracking-tight italic">{file.name}</h3>
-                            </div>
-                         </div>
-                       ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* USER FOLDERS SECTION */}
-              {sections.map((section) => {
-                const sectionFiles = groupedFiles[section.id] || [];
-                const isExpanded = expandedSections.has(section.id);
-                if (sectionFiles.length === 0 && !isManagingSections) return null;
-
-                return (
-                  <div key={section.id} className="space-y-4">
-                    <button 
-                      onClick={() => toggleSection(section.id)}
-                      onContextMenu={(e) => handleLongPressFolder(e, section.id)}
-                      onTouchStart={(e) => handleFolderTouchStart(e, section.id)}
-                      onTouchEnd={handleTouchEnd}
-                      className={`w-full flex items-center justify-between p-4 rounded-2xl shadow-lg border transition-all duration-300 ${isExpanded ? 'bg-mblue/5 dark:bg-gold/5 border-mblue dark:border-gold/40' : 'bg-white dark:bg-gray-900 border-transparent'}`}
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-md transition-all ${isExpanded ? 'metallic-blue-bg dark:metallic-gold-bg text-white dark:text-black scale-110' : 'bg-gray-100 dark:bg-black text-gray-400 dark:text-gold/40'}`}>
-                          <i className={`fa-solid ${isExpanded ? 'fa-folder-open' : 'fa-folder'}`}></i>
-                        </div>
-                        <span className={`text-sm font-black uppercase tracking-widest ${isExpanded ? 'text-mblue dark:text-gold' : 'text-gray-600 dark:text-gold/40'}`}>{section.name}</span>
-                        <span className="text-[11px] font-black bg-gray-200 dark:bg-gray-800 px-3 py-1 rounded-full text-gray-500 dark:text-gold/60">{sectionFiles.length}</span>
-                      </div>
-                      <i className={`fa-solid fa-chevron-right text-xs transition-transform duration-500 ${isExpanded ? 'rotate-90 text-mblue dark:text-gold' : 'text-gray-300'}`}></i>
-                    </button>
-
-                    {isExpanded && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 pl-2 animate-in slide-in-from-top-2">
-                        {sectionFiles.map((file) => (
-                          <div 
-                            key={file.id}
-                            onClick={() => { onSelectFile(file.data as any); onClose(); }}
-                            onContextMenu={(e) => handleLongPressFile(e, file.id)}
-                            onTouchStart={(e) => handleFileTouchStart(e, file.id)}
-                            onTouchEnd={handleTouchEnd}
-                            className="group relative flex flex-col bg-white dark:bg-gray-900 rounded-2xl overflow-hidden border-2 border-transparent hover:border-mblue dark:hover:border-gold shadow-md hover:shadow-2xl cursor-pointer transition-all h-72 animate-in fade-in zoom-in-95"
-                          >
-                            <div className="flex-1 bg-gray-200 dark:bg-black flex items-center justify-center overflow-hidden relative">
-                              {file.thumbnail ? (
-                                 <img src={file.thumbnail} alt={file.name} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all duration-700" />
-                              ) : (
-                                 <i className="fa-solid fa-file-pdf text-5xl text-gray-300 dark:text-gold/10"></i>
-                              )}
-                            </div>
-                            <div className="p-4 border-t dark:border-gold/10 bg-white dark:bg-gray-950">
-                              <h3 className="text-[12px] font-black dark:text-gold/90 truncate mb-1 uppercase tracking-tight italic">{file.name}</h3>
-                              <div className="flex justify-between text-[9px] text-gray-400 dark:text-gold/40 font-black uppercase tracking-[0.2em]">
-                                <span>{(file.size / 1024 / 1024).toFixed(1)} MB</span>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* UNCLASSIFIED (UNCATEGORIZED) SECTION */}
-              <div className="space-y-4">
-                  <div 
-                    onClick={() => toggleSection('uncategorized')}
-                    className={`flex items-center gap-3 cursor-pointer group transition-all ${expandedSections.has('uncategorized') ? 'dark:metallic-gold opacity-100' : 'opacity-40 hover:opacity-100'}`}
-                  >
-                    <i className="fa-solid fa-box-archive"></i>
-                    <h3 className="text-sm font-black uppercase tracking-[0.2em] italic">Unclassified Archives</h3>
-                    <div className="h-px flex-1 bg-gray-200 dark:bg-gold/10"></div>
-                  </div>
-                  
-                  {expandedSections.has('uncategorized') && (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 animate-in slide-in-from-top-2">
-                       {groupedFiles.uncategorized.map(file => (
-                         <div 
-                            key={`un-${file.id}`}
-                            onClick={() => { onSelectFile(file.data as any); onClose(); }}
-                            onContextMenu={(e) => handleLongPressFile(e, file.id)}
-                            onTouchStart={(e) => handleFileTouchStart(e, file.id)}
-                            onTouchEnd={handleTouchEnd}
-                            className="group relative flex flex-col bg-white dark:bg-gray-900 rounded-2xl overflow-hidden border-2 border-transparent hover:border-mblue dark:hover:border-gold shadow-md hover:shadow-2xl cursor-pointer transition-all h-72 animate-in fade-in zoom-in-95"
-                         >
-                            <div className="flex-1 bg-gray-200 dark:bg-black flex items-center justify-center overflow-hidden relative">
-                              {file.thumbnail ? (
-                                <img src={file.thumbnail} alt={file.name} className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-all duration-700" />
-                              ) : (
-                                <i className="fa-solid fa-file-pdf text-5xl text-gray-300 dark:text-gold/10"></i>
-                              )}
-                            </div>
-                            <div className="p-4 bg-white dark:bg-gray-950">
-                              <h3 className="text-[12px] font-black dark:text-gold/90 truncate uppercase tracking-tight italic">{file.name}</h3>
-                            </div>
-                         </div>
-                       ))}
-                    </div>
-                  )}
-                </div>
-            </>
-          )}
-        </div>
-
-        {/* Global Action Footer */}
-        <div className="absolute bottom-0 inset-x-0 p-6 border-t dark:border-gold/20 bg-white/80 dark:bg-black/80 backdrop-blur-xl z-20">
-          <label className="flex items-center justify-center gap-3 w-full py-5 metallic-blue-bg dark:metallic-gold-bg text-white dark:text-black rounded-2xl cursor-pointer transition-all shadow-2xl active:scale-[0.97] group">
-             <i className="fa-solid fa-cloud-arrow-up text-xl group-hover:animate-bounce"></i>
-             <span className="font-black uppercase tracking-[0.3em] text-sm italic">Unlock New Document</span>
-             <input type="file" accept="application/pdf" className="hidden" onChange={(e) => onImportNew(e)} />
-          </label>
-        </div>
-
-        {/* CUSTOM FILE CONTEXT MENU */}
-        {fileMenu && (
-          <div 
-            style={{ top: fileMenu.y, left: fileMenu.x }}
-            className="fixed z-[100] bg-white dark:bg-black border-2 dark:border-gold/40 rounded-2xl shadow-2xl w-60 overflow-hidden animate-in zoom-in-95 duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-             <div className="p-3 border-b dark:border-gold/10 bg-gray-50 dark:bg-gray-950 flex justify-between items-center">
-                <p className="text-[10px] font-black dark:text-gold uppercase truncate tracking-widest">Protocol Delta</p>
-                <button onClick={() => setFileMenu(null)}><i className="fa-solid fa-times text-xs dark:text-gold/40"></i></button>
-             </div>
-             <div className="flex flex-col py-1">
+          
+          <div className="flex gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 no-scrollbar">
+             {!isSelectionMode && !isOrganizing && (
+               <>
+                 <button 
+                   onClick={handleAutoOrganize}
+                   className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all bg-gradient-to-r from-purple-500/20 to-mblue/20 dark:from-purple-500/20 dark:to-gold/20 text-purple-600 dark:text-gold border border-purple-500/30 dark:border-gold/30 hover:scale-105 flex items-center gap-2 whitespace-nowrap"
+                 >
+                   <i className="fa-solid fa-wand-magic-sparkles"></i>
+                   <span className="hidden sm:inline">Auto Organize</span>
+                 </button>
                 <button 
-                  onClick={(e) => { e.stopPropagation(); setIsAssigningFolder(!isAssigningFolder); }}
-                  className={`w-full text-left px-4 py-4 text-xs font-black flex items-center justify-between uppercase tracking-tight transition-colors ${isAssigningFolder ? 'bg-mblue/10 dark:bg-gold/20 dark:text-gold' : 'dark:text-gold/90 hover:bg-mblue/10 dark:hover:bg-gold/10'}`}
+                  onClick={() => setShowCreateFolderInput(true)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-white/20 flex items-center gap-2 whitespace-nowrap"
                 >
-                  <span className="flex items-center gap-3"><i className="fa-solid fa-folder-tree text-mblue dark:text-gold"></i> Assign Folder</span>
-                  <i className={`fa-solid fa-chevron-right text-[10px] transition-transform ${isAssigningFolder ? 'rotate-90' : ''}`}></i>
+                  <i className="fa-solid fa-folder-plus"></i>
+                  <span className="hidden sm:inline">New Folder</span>
                 </button>
+               </>
+             )}
+             <button onClick={() => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); }} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all border whitespace-nowrap ${isSelectionMode ? 'bg-mblue dark:bg-gold text-white dark:text-black border-transparent shadow-lg' : 'bg-transparent border-gray-300 dark:border-white/20 text-gray-600 dark:text-gray-300'}`}>
+               {isSelectionMode ? 'Cancel' : 'Select'}
+             </button>
+             <button onClick={onClose} className="w-9 h-9 flex-shrink-0 rounded-full bg-gray-100 dark:bg-white/10 flex items-center justify-center hover:bg-red-500 hover:text-white transition-colors"><i className="fa-solid fa-times text-xs"></i></button>
+          </div>
+        </div>
 
-                {isAssigningFolder && (
-                   <div className="bg-gray-50 dark:bg-gray-900/50 border-y dark:border-gold/10 animate-in slide-in-from-top-2 overflow-y-auto max-h-48">
-                      {[...sections, { id: 'uncategorized', name: 'Unclassified Archives' }].map(s => (
-                        <button 
-                          key={`move-${s.id}`}
-                          onClick={(e) => moveFile(fileMenu.id, s.id, e)}
-                          className="w-full px-8 py-3 text-[10px] font-black uppercase text-left hover:bg-gold/20 dark:text-gold/80 transition-colors border-b dark:border-gold/5 last:border-0"
-                        >
-                          {s.name}
-                        </button>
-                      ))}
+        {/* Folder Creation Input */}
+        {showCreateFolderInput && (
+          <div className="absolute top-20 left-0 right-0 z-30 flex justify-center animate-slide-down">
+             <div className="bg-white dark:bg-black border border-gray-200 dark:border-gold/30 p-4 rounded-2xl shadow-xl flex gap-2 w-full max-w-md mx-4">
+                <input 
+                  autoFocus
+                  placeholder="Enter Folder Name..."
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleManualCreateFolder()}
+                  className="flex-1 bg-gray-50 dark:bg-white/10 rounded-xl px-4 py-2 text-sm outline-none border border-transparent focus:border-mblue dark:focus:border-gold"
+                />
+                <button onClick={handleManualCreateFolder} className="bg-black dark:bg-white text-white dark:text-black px-4 rounded-xl text-xs font-bold uppercase">Create</button>
+                <button onClick={() => setShowCreateFolderInput(false)} className="text-gray-400 hover:text-red-500 px-2"><i className="fa-solid fa-times"></i></button>
+             </div>
+          </div>
+        )}
+
+        {/* Tabs */}
+        {!isSelectionMode && !searchQuery && (
+          <div className="px-6 py-2 flex gap-6 border-b border-gray-100 dark:border-white/5 bg-white/30 dark:bg-black/30">
+             <button onClick={() => setActiveTab('all')} className={`text-xs font-bold uppercase tracking-widest py-2 border-b-2 transition-all ${activeTab === 'all' ? 'border-mblue dark:border-gold text-mblue dark:text-gold' : 'border-transparent text-gray-400'}`}>Recents</button>
+             <button onClick={() => setActiveTab('folders')} className={`text-xs font-bold uppercase tracking-widest py-2 border-b-2 transition-all ${activeTab === 'folders' ? 'border-mblue dark:border-gold text-mblue dark:text-gold' : 'border-transparent text-gray-400'}`}>Folders</button>
+          </div>
+        )}
+        
+        {/* Search Results Label */}
+        {searchQuery && (
+          <div className="px-6 py-3 bg-mblue/5 dark:bg-gold/5 border-b border-mblue/10 dark:border-gold/10">
+             <p className="text-xs font-bold uppercase tracking-widest text-mblue dark:text-gold">
+               Found {currentFiles.length} matches
+             </p>
+          </div>
+        )}
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-10 scrollbar-hide relative">
+           
+           {/* Non-blocking Progress Toast */}
+           {isOrganizing && (
+             <div className="absolute bottom-4 right-4 z-20 bg-white dark:bg-black border border-mblue dark:border-gold shadow-2xl p-4 rounded-xl flex items-center gap-4 animate-slide-up max-w-xs ring-1 ring-black/5">
+                 <div className="w-8 h-8 relative flex-shrink-0">
+                    <div className="absolute inset-0 rounded-full border-2 border-gray-200 dark:border-gray-800"></div>
+                    <div className="absolute inset-0 rounded-full border-2 border-t-purple-500 dark:border-t-gold animate-spin"></div>
+                 </div>
+                 <div className="flex flex-col overflow-hidden">
+                    <h4 className="text-xs font-bold dark:text-gold">Organizing Library...</h4>
+                    <p className="text-[10px] text-gray-500 truncate w-48">{organizeProgress.status}</p>
+                    <div className="w-full bg-gray-200 dark:bg-white/10 h-1 mt-2 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-purple-500 dark:bg-gold transition-all duration-300"
+                          style={{ width: `${(organizeProgress.current / organizeProgress.total) * 100}%` }}
+                        ></div>
+                    </div>
+                 </div>
+             </div>
+           )}
+
+           {loading ? (
+             <div className="flex justify-center py-20"><i className="fa-solid fa-circle-notch fa-spin text-2xl text-mblue dark:text-gold"></i></div>
+           ) : (
+             <>
+                {/* Recent View / Search Results */}
+                {(activeTab === 'all' || !!searchQuery) && !isSelectionMode && (
+                   <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-5 animate-fade-in">
+                      {sortedAllFiles.map(renderFileCard)}
+                      {sortedAllFiles.length === 0 && <p className="col-span-full text-center py-10 text-gray-400">No documents found.</p>}
                    </div>
                 )}
 
-                <button 
-                  onClick={() => { handleDeleteFile(fileMenu.id); setFileMenu(null); }}
-                  className="w-full text-left px-4 py-4 text-xs font-black text-red-500 hover:bg-red-500/10 flex items-center gap-3 uppercase tracking-tight"
-                >
-                  <i className="fa-solid fa-trash-can"></i> Expunge Forever
+                {/* Folder View (or Selection Mode Force View) - Hidden if searching unless filtered */}
+                {((activeTab === 'folders' && !searchQuery) || isSelectionMode) && (
+                  <div className="space-y-8 animate-slide-up">
+                    {/* Folders */}
+                    {sections.sort((a,b) => a.name.localeCompare(b.name)).map(section => {
+                        const sFiles = groupedFiles[section.id] || [];
+                        if (!sFiles.length && !isSelectionMode) return null;
+                        return (
+                          <div key={section.id} className="bg-gray-50/50 dark:bg-white/5 rounded-3xl p-5 border border-transparent dark:border-white/5 transition-all">
+                            <div className="flex items-center justify-between mb-4 cursor-pointer" onClick={() => toggleSection(section.id)}>
+                               <div className="flex items-center gap-3">
+                                  <i className={`fa-solid ${expandedSections.has(section.id) ? 'fa-folder-open' : 'fa-folder'} text-mblue dark:text-gold text-lg`}></i>
+                                  <h3 className="text-sm font-black uppercase tracking-wider dark:text-gray-200">{section.name}</h3>
+                                  <span className="text-[10px] bg-white dark:bg-black px-2 py-0.5 rounded-full shadow-sm text-gray-500">{sFiles.length}</span>
+                               </div>
+                               <div className="flex items-center gap-3">
+                                  {!isSelectionMode && <button onClick={(e) => { e.stopPropagation(); handleDeleteSection(section.id); }} className="text-gray-400 hover:text-red-500 transition-colors"><i className="fa-solid fa-trash-can"></i></button>}
+                                  <i className={`fa-solid fa-chevron-down text-xs text-gray-400 transition-transform ${expandedSections.has(section.id) ? 'rotate-180' : ''}`}></i>
+                               </div>
+                            </div>
+                            {expandedSections.has(section.id) && (
+                              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 animate-fade-in">
+                                  {sFiles.map(renderFileCard)}
+                                  {sFiles.length === 0 && <p className="col-span-full text-center py-4 text-xs text-gray-400 italic">Folder Empty</p>}
+                              </div>
+                            )}
+                          </div>
+                        );
+                    })}
+
+                    {/* Uncategorized */}
+                    <div className="p-5">
+                      <div className="flex items-center gap-3 mb-4 cursor-pointer" onClick={() => toggleSection('uncategorized')}>
+                         <i className="fa-solid fa-box-archive text-gray-400"></i>
+                         <h3 className="text-sm font-black uppercase tracking-wider text-gray-500 dark:text-gray-400">Uncategorized</h3>
+                         <div className="h-px flex-1 bg-gray-200 dark:bg-white/10"></div>
+                         <i className={`fa-solid fa-chevron-down text-xs text-gray-400 transition-transform ${expandedSections.has('uncategorized') ? 'rotate-180' : ''}`}></i>
+                      </div>
+                      {expandedSections.has('uncategorized') && (
+                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+                            {groupedFiles.uncategorized.map(renderFileCard)}
+                         </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+             </>
+           )}
+        </div>
+
+        {/* Footer Actions */}
+        <div className="p-5 bg-white/80 dark:bg-black/90 backdrop-blur-xl border-t border-gray-100 dark:border-white/10 flex justify-between items-center absolute bottom-0 w-full z-20">
+           {!isSelectionMode ? (
+             <label className="flex items-center justify-center w-full gap-3 cursor-pointer group py-2">
+                <div className="w-10 h-10 rounded-full bg-black dark:bg-white text-white dark:text-black flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                   <i className="fa-solid fa-plus"></i>
+                </div>
+                <span className="font-bold text-xs uppercase tracking-widest opacity-70 group-hover:opacity-100 transition-opacity">Add Documents</span>
+                <input type="file" multiple accept="application/pdf" className="hidden" onChange={(e) => handleImport(e)} />
+             </label>
+           ) : (
+             <div className="flex gap-3 w-full animate-slide-up">
+                <div className="flex-1 flex items-center justify-center font-bold text-xs uppercase tracking-widest dark:text-gold">
+                   {selectedIds.size} Selected
+                </div>
+                <button onClick={() => setShowBatchMove(true)} disabled={!selectedIds.size} className="flex-1 py-3 bg-mblue dark:bg-gold text-white dark:text-black rounded-xl font-bold uppercase tracking-wider text-xs shadow-lg disabled:opacity-50 disabled:shadow-none hover:scale-[1.02] transition-all">
+                   Move to Folder
                 </button>
+                <button onClick={() => handleBatchDelete()} disabled={!selectedIds.size} className="flex-1 py-3 bg-red-500/10 text-red-500 rounded-xl font-bold uppercase tracking-wider text-xs border border-red-500/20 hover:bg-red-500 hover:text-white transition-all disabled:opacity-50">
+                   Delete
+                </button>
+             </div>
+           )}
+        </div>
+
+        {/* Batch Move Overlay */}
+        {showBatchMove && (
+          <div className="absolute inset-0 z-30 bg-white/95 dark:bg-black/95 backdrop-blur-xl flex flex-col animate-in fade-in">
+             <div className="p-6 border-b border-gray-100 dark:border-white/10 flex justify-between items-center">
+                <h3 className="text-lg font-black uppercase tracking-widest dark:text-gold">Select Destination</h3>
+                <button onClick={() => setShowBatchMove(false)} className="text-gray-400 hover:text-red-500"><i className="fa-solid fa-times"></i></button>
+             </div>
+             
+             <div className="flex-1 overflow-y-auto p-6 space-y-2">
+                <button 
+                  onClick={() => handleBatchMove('uncategorized')}
+                  className="w-full p-4 rounded-xl border border-gray-200 dark:border-white/10 flex items-center gap-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group text-left"
+                >
+                   <div className="w-10 h-10 rounded-full bg-gray-100 dark:bg-white/10 flex items-center justify-center"><i className="fa-solid fa-box-archive text-gray-500"></i></div>
+                   <span className="font-bold text-sm dark:text-gray-200 group-hover:text-mblue dark:group-hover:text-gold">Uncategorized Archive</span>
+                </button>
+
+                {sections.map(s => (
+                   <button 
+                    key={s.id}
+                    onClick={() => handleBatchMove(s.id)}
+                    className="w-full p-4 rounded-xl border border-gray-200 dark:border-white/10 flex items-center gap-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group text-left"
+                  >
+                     <div className="w-10 h-10 rounded-full bg-mblue/10 dark:bg-gold/10 flex items-center justify-center"><i className="fa-solid fa-folder text-mblue dark:text-gold"></i></div>
+                     <span className="font-bold text-sm dark:text-gray-200 group-hover:text-mblue dark:group-hover:text-gold">{s.name}</span>
+                  </button>
+                ))}
+             </div>
+
+             <div className="p-6 border-t border-gray-100 dark:border-white/10 bg-gray-50 dark:bg-white/5">
+                <label className="text-[9px] font-bold uppercase tracking-widest text-gray-500 mb-2 block">Or Create New Folder</label>
+                <div className="flex gap-2">
+                   <input 
+                      value={newFolderInBatch}
+                      onChange={(e) => setNewFolderInBatch(e.target.value)}
+                      placeholder="Folder Name..."
+                      className="flex-1 bg-white dark:bg-black border border-gray-200 dark:border-white/10 rounded-xl px-4 text-sm outline-none focus:border-mblue dark:focus:border-gold"
+                   />
+                   <button 
+                      onClick={handleCreateAndMove}
+                      disabled={!newFolderInBatch.trim()}
+                      className="px-6 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold uppercase text-xs tracking-wider disabled:opacity-50"
+                   >
+                      Move Here
+                   </button>
+                </div>
              </div>
           </div>
         )}
-
-        {/* CUSTOM FOLDER CONTEXT MENU */}
-        {folderMenu && (
-          <div 
-            style={{ top: folderMenu.y, left: folderMenu.x }}
-            className="fixed z-[100] bg-white dark:bg-black border-2 dark:border-gold/40 rounded-2xl shadow-2xl w-60 overflow-hidden animate-in zoom-in-95 duration-150"
-            onClick={(e) => e.stopPropagation()}
-          >
-             <div className="p-3 border-b dark:border-gold/10 bg-gray-50 dark:bg-gray-950 flex justify-between items-center">
-                <p className="text-[10px] font-black dark:text-gold uppercase truncate tracking-widest">Folder Directive</p>
-                <button onClick={() => setFolderMenu(null)}><i className="fa-solid fa-times text-xs dark:text-gold/40"></i></button>
-             </div>
-             <div className="flex flex-col py-1">
-                <button 
-                  onClick={() => {
-                    const input = document.createElement('input');
-                    input.type = 'file';
-                    input.accept = 'application/pdf';
-                    input.onchange = (e) => {
-                      onImportNew(e as any, folderMenu.id);
-                      setFolderMenu(null);
-                    };
-                    input.click();
-                  }}
-                  className="w-full text-left px-4 py-4 text-xs font-black dark:text-gold/90 hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 uppercase tracking-tight"
-                >
-                  <i className="fa-solid fa-file-circle-plus text-mblue dark:text-gold"></i> Import Document Here
-                </button>
-                <button 
-                   onClick={() => {
-                     const name = prompt("Enter new Imperial Designation for this folder:");
-                     if (name) saveSection({ id: folderMenu.id, name });
-                     setFolderMenu(null);
-                     loadData();
-                   }}
-                   className="w-full text-left px-4 py-4 text-xs font-black dark:text-gold/90 hover:bg-mblue/10 dark:hover:bg-gold/10 flex items-center gap-3 uppercase tracking-tight"
-                >
-                  <i className="fa-solid fa-pen-to-square"></i> Re-designate Folder
-                </button>
-                <button 
-                  onClick={() => { handleDeleteSection(folderMenu.id); setFolderMenu(null); }}
-                  className="w-full text-left px-4 py-4 text-xs font-black text-red-500 hover:bg-red-500/10 flex items-center gap-3 uppercase tracking-tight"
-                >
-                  <i className="fa-solid fa-ban"></i> Decommission Folder
-                </button>
-             </div>
-          </div>
-        )}
-
       </div>
     </div>
   );

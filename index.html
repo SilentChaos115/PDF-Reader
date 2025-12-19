@@ -7,97 +7,116 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="manifest.json" />
-    <title>ZenReader Gold</title>
+    <title>ZenReader</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,700;1,700&display=swap" rel="stylesheet">
     <script>
       tailwind.config = {
         darkMode: 'class',
         theme: {
           extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              serif: ['Playfair Display', 'serif'],
+            },
             colors: {
               gold: {
-                DEFAULT: '#D4AF37',
-                light: '#F9E2AF',
-                dark: '#AA8A2E',
-                shiny: '#FFD700'
+                DEFAULT: '#C5A059', // Muted Champagne
+                light: '#EAD8A8',
+                dark: '#8C6F35',
+                shiny: '#F2D06B',
+                glass: 'rgba(197, 160, 89, 0.15)'
               },
               mblue: {
-                DEFAULT: '#72A0C1',
-                light: '#B0C4DE',
-                dark: '#4682B4',
-                shiny: '#87CEEB'
-              }
+                DEFAULT: '#5B7C99', // Muted Slate Blue
+                light: '#A5C0D6',
+                dark: '#354F66',
+                shiny: '#89B4D6',
+                glass: 'rgba(91, 124, 153, 0.15)'
+              },
+              darkbg: '#0A0A0A',
+              paper: '#FDFBF7'
+            },
+            animation: {
+              'fade-in': 'fadeIn 0.3s ease-out',
+              'slide-up': 'slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+              'slide-down': 'slideDown 0.3s ease-out',
+            },
+            keyframes: {
+              fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+              slideUp: { '0%': { transform: 'translateY(20px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
+              slideDown: { '0%': { transform: 'translateY(-20px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
             }
           }
         }
       }
     </script>
     <style>
-      ::-webkit-scrollbar { width: 4px; height: 4px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-      .dark ::-webkit-scrollbar-thumb { background: #D4AF37; }
-
+      ::-webkit-scrollbar { width: 0px; background: transparent; }
+      
       body { 
         overscroll-behavior-y: none; 
         -webkit-tap-highlight-color: transparent; 
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        background-color: #ffffff;
+        background-color: #0A0A0A;
+        font-family: 'Inter', sans-serif;
       }
-      .dark body { background-color: #000000; }
-      
+
       .textLayer {
         position: absolute; text-align: initial; left: 0; top: 0; right: 0; bottom: 0;
         overflow: hidden; opacity: 0.2; line-height: 1.0; pointer-events: auto;
       }
       .textLayer span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
 
-      /* Metallic Gradients */
+      /* Modern Glassmorphism */
+      .glass-panel {
+        background: rgba(255, 255, 255, 0.75);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+      }
+      .dark .glass-panel {
+        background: rgba(15, 15, 15, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .glass-button {
+        background: rgba(255, 255, 255, 0.5);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(0,0,0,0.05);
+      }
+      .dark .glass-button {
+        background: rgba(30, 30, 30, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      /* Metallic Gradients - Refined */
       .metallic-gold-text {
-        background: linear-gradient(135deg, #BF953F, #FCF6BA, #B38728, #FBF5B7, #AA771C);
+        background: linear-gradient(135deg, #C5A059, #EAD8A8, #8C6F35);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        background-size: 200% auto;
       }
       .metallic-gold-bg {
-        background: linear-gradient(135deg, #BF953F 0%, #FCF6BA 45%, #B38728 50%, #FBF5B7 55%, #AA771C 100%);
-        background-size: 200% 200%;
-      }
-      .metallic-blue-text {
-        background: linear-gradient(135deg, #72A0C1, #B0C4DE, #4682B4, #E0FFFF, #72A0C1);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-size: 200% auto;
+        background: linear-gradient(135deg, #C5A059, #8C6F35);
       }
       .metallic-blue-bg {
-        background: linear-gradient(135deg, #72A0C1 0%, #B0C4DE 45%, #4682B4 50%, #E0FFFF 55%, #72A0C1 100%);
-        background-size: 200% 200%;
+        background: linear-gradient(135deg, #5B7C99, #354F66);
       }
 
-      @keyframes shimmer {
-        0% { background-position: -200% 0; }
-        100% { background-position: 200% 0; }
+      /* 3D Book Transforms */
+      .perspective-container { perspective: 2000px; transform-style: preserve-3d; }
+      
+      @keyframes bookFlipNext {
+        0% { opacity: 0.5; transform: translateX(20px) rotateY(-10deg) scale(0.98); }
+        100% { opacity: 1; transform: translateX(0) rotateY(0deg) scale(1); }
       }
-      .shimmer {
-        animation: shimmer 4s infinite linear;
+      @keyframes bookFlipPrev {
+        0% { opacity: 0.5; transform: translateX(-20px) rotateY(10deg) scale(0.98); }
+        100% { opacity: 1; transform: translateX(0) rotateY(0deg) scale(1); }
       }
 
-      /* Transitions */
-      @keyframes slideInRight { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
-      @keyframes slideInLeft { from { opacity: 0; transform: translateX(-20px); } to { opacity: 1; transform: translateX(0); } }
-      .animate-page-next { animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-      .animate-page-prev { animation: slideInLeft 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-
-      .glass-card {
-        backdrop-filter: blur(12px);
-        background: rgba(255, 255, 255, 0.7);
-        border: 1px solid rgba(114, 160, 193, 0.2);
-      }
-      .dark .glass-card {
-        background: rgba(0, 0, 0, 0.7);
-        border: 1px solid rgba(212, 175, 55, 0.2);
-      }
+      .animate-book-next { animation: bookFlipNext 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
+      .animate-book-prev { animation: bookFlipPrev 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) forwards; }
     </style>
   <script type="importmap">
 {
@@ -110,7 +129,7 @@
 }
 </script>
 </head>
-  <body class="bg-white dark:bg-black text-gray-900 dark:text-gray-100 transition-colors duration-200">
-    <div id="root" class="h-screen w-screen overflow-hidden flex flex-col"></div>
+  <body class="bg-paper dark:bg-darkbg text-gray-900 dark:text-gray-100 transition-colors duration-300">
+    <div id="root" class="h-screen w-screen overflow-hidden relative"></div>
   </body>
 </html>

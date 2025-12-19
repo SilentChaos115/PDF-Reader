@@ -210,12 +210,12 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
   };
 
   const direction = pageNumber > prevPageRef.current ? 'next' : 'prev';
-  const animationClass = isFullScreen ? (direction === 'next' ? 'animate-page-next' : 'animate-page-prev') : '';
+  const animationClass = direction === 'next' ? 'animate-book-next' : 'animate-book-prev';
 
   return (
     <div 
       ref={containerRef} 
-      className="flex-1 overflow-auto flex justify-center p-4 relative bg-gray-100 dark:bg-black touch-pan-x touch-pan-y transition-colors duration-500" 
+      className="flex-1 overflow-auto flex justify-center p-4 relative bg-gray-100 dark:bg-black touch-pan-x touch-pan-y transition-colors duration-500 perspective-container" 
       onContextMenu={(e) => { 
         if (!highlighterColor) {
           e.preventDefault(); 

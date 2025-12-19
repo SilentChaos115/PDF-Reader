@@ -2,6 +2,7 @@ import React from 'react';
 import { AppView } from '../types';
 
 interface ControlsProps {
+  visible: boolean;
   pageNumber: number;
   numPages: number;
   scale: number;
@@ -13,9 +14,11 @@ interface ControlsProps {
   doubleTapEnabled: boolean;
   toggleFullScreen: () => void;
   onFitToScreen: () => void;
+  onOpenAI: () => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
+  visible,
   pageNumber,
   numPages,
   scale,
@@ -26,101 +29,87 @@ export const Controls: React.FC<ControlsProps> = ({
   hasFile,
   doubleTapEnabled,
   toggleFullScreen,
-  onFitToScreen
+  onFitToScreen,
+  onOpenAI
 }) => {
-  const buttonBase = "flex flex-col items-center justify-center w-full h-full space-y-1 text-xs font-medium transition-colors";
-  const activeClass = "text-blue-600 dark:text-blue-400";
-  const inactiveClass = "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200";
-
   if (!hasFile) return null;
 
-  return (
-    <>
-      {/* Floating Action Controls for Reader (Zoom/Nav) */}
-      {activeView === AppView.READER && (
-        <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 flex items-center gap-2 bg-white/90 dark:bg-gray-800/90 backdrop-blur-sm p-2 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 z-20">
-          <button 
-            disabled={pageNumber <= 1}
-            onClick={() => onPageChange(pageNumber - 1)}
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
-          >
-            <i className="fa-solid fa-chevron-left"></i>
-          </button>
-          
-          <div className="h-8 w-[1px] bg-gray-300 dark:bg-gray-600 mx-1"></div>
-
-           <button 
-            onClick={() => onZoomChange(Math.max(0.5, scale - 0.1))}
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-             <i className="fa-solid fa-minus text-sm"></i>
-          </button>
-
-          <span className="font-mono text-xs w-10 text-center">{Math.round(scale * 100)}%</span>
-
-          <button 
-            onClick={() => onZoomChange(Math.min(3.0, scale + 0.1))}
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-             <i className="fa-solid fa-plus text-sm"></i>
-          </button>
-
-          <button 
-            onClick={onFitToScreen}
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-blue-50 dark:hover:bg-blue-900/30 text-blue-600 dark:text-blue-400 transition-colors ml-1"
-            title="Fit to Screen"
-          >
-             <i className="fa-solid fa-maximize text-sm"></i>
-          </button>
-
-          {!doubleTapEnabled && (
-             <button 
-              onClick={toggleFullScreen}
-              className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ml-1"
-              title="Fullscreen"
-            >
-               <i className="fa-solid fa-expand text-sm"></i>
-            </button>
-          )}
-
-          <div className="h-8 w-[1px] bg-gray-300 dark:bg-gray-600 mx-1"></div>
-
-          <button 
-            disabled={pageNumber >= numPages}
-            onClick={() => onPageChange(pageNumber + 1)}
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
-          >
-            <i className="fa-solid fa-chevron-right"></i>
-          </button>
-        </div>
+  const NavButton = ({ active, onClick, icon, label }: { active?: boolean, onClick: () => void, icon: string, label?: string }) => (
+    <button 
+      onClick={onClick}
+      className={`group relative flex items-center justify-center w-12 h-12 rounded-2xl transition-all duration-300 ${active ? 'bg-black dark:bg-white text-white dark:text-black shadow-lg scale-105' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10'}`}
+    >
+      <i className={`${icon} text-lg`}></i>
+      {label && (
+        <span className="absolute -top-10 px-2 py-1 bg-black/80 dark:bg-white/90 text-white dark:text-black text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity font-bold uppercase tracking-wider pointer-events-none whitespace-nowrap backdrop-blur-sm">
+          {label}
+        </span>
       )}
+    </button>
+  );
 
-      {/* Main Tab Bar */}
-      <nav className="h-16 bg-white dark:bg-gray-850 border-t dark:border-gray-700 shrink-0 flex items-center justify-around z-30 pb-safe">
-        <button 
-          onClick={() => setActiveView(AppView.READER)}
-          className={`${buttonBase} ${activeView === AppView.READER ? activeClass : inactiveClass}`}
-        >
-          <i className="fa-solid fa-book-open text-xl"></i>
-          <span>Read</span>
-        </button>
+  return (
+    <div className={`fixed bottom-6 inset-x-0 z-40 flex justify-center pointer-events-none transition-all duration-500 ${visible ? 'translate-y-0 opacity-100' : 'translate-y-24 opacity-0'}`}>
+      
+      <div className="glass-panel px-3 py-2 rounded-[24px] flex items-center gap-1 shadow-[0_20px_40px_-12px_rgba(0,0,0,0.1)] dark:shadow-[0_20px_40px_-12px_rgba(0,0,0,0.5)] pointer-events-auto scale-100 hover:scale-[1.02] transition-transform duration-300">
+        
+        {/* View Switcher */}
+        <NavButton 
+          active={activeView === AppView.READER} 
+          onClick={() => setActiveView(AppView.READER)} 
+          icon="fa-solid fa-book-open" 
+          label="Read"
+        />
+        <NavButton 
+          active={activeView === AppView.BOOKMARKS} 
+          onClick={() => setActiveView(AppView.BOOKMARKS)} 
+          icon="fa-regular fa-bookmark" 
+          label="Bookmarks"
+        />
+        <NavButton 
+          active={activeView === AppView.NOTES} 
+          onClick={() => setActiveView(AppView.NOTES)} 
+          icon="fa-regular fa-pen-to-square" 
+          label="Notes"
+        />
 
-        <button 
-          onClick={() => setActiveView(AppView.BOOKMARKS)}
-          className={`${buttonBase} ${activeView === AppView.BOOKMARKS ? activeClass : inactiveClass}`}
-        >
-          <i className="fa-solid fa-bookmark text-xl"></i>
-          <span>Bookmarks</span>
-        </button>
+        <div className="w-px h-8 bg-gray-200 dark:bg-white/10 mx-2"></div>
 
-        <button 
-          onClick={() => setActiveView(AppView.NOTES)}
-          className={`${buttonBase} ${activeView === AppView.NOTES ? activeClass : inactiveClass}`}
-        >
-          <i className="fa-solid fa-pen-to-square text-xl"></i>
-          <span>Notes</span>
-        </button>
-      </nav>
-    </>
+        {/* Reader Controls (Only visible in Reader view) */}
+        {activeView === AppView.READER && (
+          <>
+             <button 
+               onClick={() => onPageChange(pageNumber - 1)}
+               disabled={pageNumber <= 1}
+               className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-30 transition-colors"
+             >
+               <i className="fa-solid fa-chevron-left text-sm"></i>
+             </button>
+             
+             <div className="flex flex-col items-center w-10">
+               <span className="text-[9px] font-black opacity-50 uppercase tracking-widest">Page</span>
+               <span className="text-xs font-bold tabular-nums">{pageNumber}</span>
+             </div>
+
+             <button 
+               onClick={() => onPageChange(pageNumber + 1)}
+               disabled={pageNumber >= numPages}
+               className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-30 transition-colors"
+             >
+               <i className="fa-solid fa-chevron-right text-sm"></i>
+             </button>
+
+             <div className="w-px h-8 bg-gray-200 dark:bg-white/10 mx-2"></div>
+
+             <button 
+              onClick={onOpenAI}
+              className="w-12 h-12 rounded-2xl bg-gradient-to-br from-mblue to-mblue-dark dark:from-gold dark:to-gold-dark text-white dark:text-black shadow-lg flex items-center justify-center hover:shadow-mblue/50 dark:hover:shadow-gold/50 transition-all hover:-translate-y-1"
+             >
+               <i className="fa-solid fa-sparkles"></i>
+             </button>
+          </>
+        )}
+      </div>
+    </div>
   );
 };

@@ -7,7 +7,6 @@ import { BookmarksList } from './components/BookmarksList';
 import { SettingsModal } from './components/SettingsModal';
 import { GeminiAssistant } from './components/GeminiAssistant';
 import { LibraryModal } from './components/LibraryModal';
-import { DraggableFab } from './components/DraggableFab';
 import { AudioPlayer } from './components/AudioPlayer';
 import { loadPDF, generatePDFThumbnail } from './services/pdfHelper';
 import { saveFileToLibrary, updateFileDate, updateFileSection } from './services/db';
@@ -24,8 +23,11 @@ export default function App() {
   const [activeView, setActiveView] = useState<AppView>(AppView.READER);
   const [isFullScreen, setIsFullScreen] = useState(false);
   
+  // UI Visibility State (for immersive reading)
+  const [uiVisible, setUiVisible] = useState(true);
+
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isLibraryOpen, setIsLibraryOpen] = useState(false);
+  const [isLibraryOpen, setIsLibraryOpen] = useState(true); // Open library by default if no file
   
   const [enableGemini, setEnableGemini] = useState(true);
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-3-flash-preview');
@@ -129,6 +131,7 @@ export default function App() {
         await updateFileSection(id, sectionId);
       }
       await updateFileDate(id);
+      setIsLibraryOpen(false);
     } catch (error) { alert("Could not load PDF."); }
   };
 
@@ -137,11 +140,92 @@ export default function App() {
   }, [numPages]);
 
   const toggleBookmark = () => setBookmarks(prev => prev.includes(pageNumber) ? prev.filter(p => p !== pageNumber) : [...prev, pageNumber]);
+  const toggleFullScreen = () => {
+    setIsFullScreen(!isFullScreen);
+    setUiVisible(!isFullScreen); // Hide UI when entering fullscreen
+  };
 
   const fileId = fileName ? `${fileName}_${fileSize}` : "";
 
+  // Helper to toggle UI visibility on tap
+  const toggleUi = () => setUiVisible(!uiVisible);
+
   return (
-    <>
+    <div className="h-full w-full relative overflow-hidden bg-paper dark:bg-darkbg text-gray-900 dark:text-white">
+      
+      {/* Background/Main Content Layer */}
+      <main className="absolute inset-0 z-0 flex flex-col">
+        {activeView === AppView.READER && (
+          <div className="flex-1 w-full h-full relative" onClick={(e) => { 
+             // If clicking clearly on the background/canvas, toggle UI
+             if ((e.target as HTMLElement).tagName !== 'BUTTON') toggleUi();
+          }}>
+            <ReaderView 
+              pdfDoc={pdfDoc} pageNumber={pageNumber} scale={scale} setNumPages={setNumPages} darkMode={darkMode}
+              highlights={highlights} isBookmarked={bookmarks.includes(pageNumber)} 
+              highlighterColor={highlighterColor} setHighlighterColor={setHighlighterColor}
+              highlighterStyle={highlighterStyle} setHighlighterStyle={setHighlighterStyle}
+              eraserMode={eraserMode} setEraserMode={setEraserMode}
+              onContextMenuAction={(a) => { 
+                if(a === 'bookmark') toggleBookmark(); 
+                else if(a === 'note') setActiveView(AppView.NOTES); 
+                else setHighlighterColor(darkMode ? '#C5A059' : '#5B7C99'); 
+              }}
+              onSummarizeSelection={(t) => { setEnableGemini(true); setGeminiInitialMessage({text: t, type: 'summarize'}); setIsGeminiChatOpen(true); }}
+              onExplainSelection={(t) => { setEnableGemini(true); setGeminiInitialMessage({text: t, type: 'explain'}); setIsGeminiChatOpen(true); }}
+              onAddHighlight={(r,t,c,s,o) => setHighlights(prev => [...prev, { id: Date.now().toString(), page: pageNumber, rects: r, color: c, text: t, style: s, opacity: o }])}
+              onRemoveHighlight={(id) => setHighlights(prev => prev.filter(h => h.id !== id))}
+              isFullScreen={isFullScreen} toggleFullScreen={toggleFullScreen} onZoomChange={setScale}
+              doubleTapEnabled={doubleTapEnabled} fitToScreenTrigger={fitToScreenTrigger} swipeEnabled={swipeEnabled} onPageChange={handlePageChange}
+            />
+          </div>
+        )}
+        {activeView === AppView.NOTES && (
+          <div className="flex-1 w-full h-full pt-20 pb-24">
+             <NotesPanel 
+                notes={notes} updateNotes={setNotes} pdfDoc={pdfDoc} pageNumber={pageNumber} highlights={highlights} 
+                goToPage={(p) => { handlePageChange(p); setActiveView(AppView.READER); }} 
+                deleteHighlight={(id) => setHighlights(prev => prev.filter(h => h.id !== id))} 
+            />
+          </div>
+        )}
+        {activeView === AppView.BOOKMARKS && (
+          <div className="flex-1 w-full h-full pt-20 pb-24">
+            <BookmarksList 
+                bookmarks={bookmarks} 
+                goToPage={(p) => { handlePageChange(p); setActiveView(AppView.READER); }} 
+                removeBookmark={(p) => setBookmarks(prev => prev.filter(b => b !== p))} 
+            />
+          </div>
+        )}
+      </main>
+
+      {/* Floating UI Layer */}
+      {/* Top Header */}
+      <TopBar 
+        visible={uiVisible}
+        fileName={fileName} pageNumber={pageNumber} numPages={numPages} 
+        onOpenLibrary={() => setIsLibraryOpen(true)} 
+        isBookmarked={bookmarks.includes(pageNumber)} 
+        toggleBookmark={toggleBookmark} 
+        onOpenSettings={() => setIsSettingsOpen(true)} 
+        isAudioActive={isAudioPlayerVisible}
+        onToggleAudio={() => setIsAudioPlayerVisible(!isAudioPlayerVisible)}
+      />
+
+      {/* Bottom Dock */}
+      <Controls 
+        visible={uiVisible}
+        pageNumber={pageNumber} numPages={numPages} scale={scale} 
+        activeView={activeView} setActiveView={setActiveView} 
+        onPageChange={handlePageChange} onZoomChange={setScale} 
+        hasFile={!!pdfDoc} doubleTapEnabled={doubleTapEnabled} 
+        toggleFullScreen={toggleFullScreen} 
+        onFitToScreen={() => setFitToScreenTrigger(prev => prev + 1)}
+        onOpenAI={() => setIsGeminiChatOpen(true)}
+      />
+
+      {/* Overlays / Modals */}
       <SettingsModal 
         isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)}
         darkMode={darkMode}
@@ -157,27 +241,39 @@ export default function App() {
         onClose={() => setIsLibraryOpen(false)} 
         onSelectFile={loadFile} 
         onImportNew={async (e, sectionId) => {
-          if (e.target.files?.[0]) await loadFile(e.target.files[0], sectionId);
+          const files = e.target.files;
+          if (!files || files.length === 0) return;
+          const processFile = async (file: File) => {
+             try {
+                const doc = await loadPDF(file);
+                const thumb = await generatePDFThumbnail(doc);
+                const id = `${file.name}_${file.size}`;
+                await saveFileToLibrary(file, thumb);
+                if (sectionId) await updateFileSection(id, sectionId);
+                return { doc, id };
+             } catch(err) {
+                console.error("Error importing " + file.name, err);
+                return null;
+             }
+          };
+          if (files.length === 1) {
+             await loadFile(files[0], sectionId);
+          } else {
+             for (let i = 0; i < files.length; i++) await processFile(files[i]);
+          }
         }} 
       />
 
       {enableGemini && (
-        <>
-          <GeminiAssistant 
-            pdfDoc={pdfDoc} pageNumber={pageNumber} isOpen={isGeminiChatOpen} onClose={() => setIsGeminiChatOpen(false)}
-            initialMessage={geminiInitialMessage?.text || null} 
-            initialType={geminiInitialMessage?.type || 'summarize'}
-            onInitialMessageHandled={() => setGeminiInitialMessage(null)}
-            selectedModel={selectedModel}
-            history={chatHistory}
-            onUpdateHistory={setChatHistory}
-          />
-          {!isGeminiChatOpen && activeView === AppView.READER && (
-            <DraggableFab onClick={() => setIsGeminiChatOpen(true)} className="fixed bottom-24 right-4 w-12 h-12 metallic-blue-bg dark:metallic-gold-bg rounded-full text-white dark:text-black shadow-2xl flex items-center justify-center ring-2 ring-white/20 dark:ring-gold/20 animate-shine z-50">
-              <i className="fa-solid fa-sparkles"></i>
-            </DraggableFab>
-          )}
-        </>
+        <GeminiAssistant 
+          pdfDoc={pdfDoc} pageNumber={pageNumber} isOpen={isGeminiChatOpen} onClose={() => setIsGeminiChatOpen(false)}
+          initialMessage={geminiInitialMessage?.text || null} 
+          initialType={geminiInitialMessage?.type || 'summarize'}
+          onInitialMessageHandled={() => setGeminiInitialMessage(null)}
+          selectedModel={selectedModel}
+          history={chatHistory}
+          onUpdateHistory={setChatHistory}
+        />
       )}
 
       {isAudioPlayerVisible && pdfDoc && (
@@ -189,60 +285,10 @@ export default function App() {
           cursor={audioCursor}
           onCursorChange={setAudioCursor}
           settings={audioSettings}
+          onSettingsChange={setAudioSettings}
           onClose={() => setIsAudioPlayerVisible(false)}
         />
       )}
-
-      {!isFullScreen && (
-        <TopBar 
-          fileName={fileName} pageNumber={pageNumber} numPages={numPages} 
-          onOpenLibrary={() => setIsLibraryOpen(true)} 
-          isBookmarked={bookmarks.includes(pageNumber)} 
-          toggleBookmark={toggleBookmark} 
-          onOpenSettings={() => setIsSettingsOpen(true)} 
-          isAudioActive={isAudioPlayerVisible}
-          onToggleAudio={() => setIsAudioPlayerVisible(!isAudioPlayerVisible)}
-        />
-      )}
-
-      <main className="flex-1 overflow-hidden relative flex flex-col bg-white dark:bg-black">
-        {activeView === AppView.READER && (
-          <ReaderView 
-            pdfDoc={pdfDoc} pageNumber={pageNumber} scale={scale} setNumPages={setNumPages} darkMode={darkMode}
-            highlights={highlights} isBookmarked={bookmarks.includes(pageNumber)} 
-            highlighterColor={highlighterColor} setHighlighterColor={setHighlighterColor}
-            highlighterStyle={highlighterStyle} setHighlighterStyle={setHighlighterStyle}
-            eraserMode={eraserMode} setEraserMode={setEraserMode}
-            onContextMenuAction={(a) => { 
-              if(a === 'bookmark') toggleBookmark(); 
-              else if(a === 'note') setActiveView(AppView.NOTES); 
-              else setHighlighterColor(darkMode ? '#D4AF37' : '#72A0C1'); 
-            }}
-            onSummarizeSelection={(t) => { setEnableGemini(true); setGeminiInitialMessage({text: t, type: 'summarize'}); setIsGeminiChatOpen(true); }}
-            onExplainSelection={(t) => { setEnableGemini(true); setGeminiInitialMessage({text: t, type: 'explain'}); setIsGeminiChatOpen(true); }}
-            onAddHighlight={(r,t,c,s,o) => setHighlights(prev => [...prev, { id: Date.now().toString(), page: pageNumber, rects: r, color: c, text: t, style: s, opacity: o }])}
-            onRemoveHighlight={(id) => setHighlights(prev => prev.filter(h => h.id !== id))}
-            isFullScreen={isFullScreen} toggleFullScreen={() => setIsFullScreen(!isFullScreen)} onZoomChange={setScale}
-            doubleTapEnabled={doubleTapEnabled} fitToScreenTrigger={fitToScreenTrigger} swipeEnabled={swipeEnabled} onPageChange={handlePageChange}
-          />
-        )}
-        {activeView === AppView.NOTES && (
-          <NotesPanel 
-            notes={notes} updateNotes={setNotes} pdfDoc={pdfDoc} pageNumber={pageNumber} highlights={highlights} 
-            goToPage={(p) => { handlePageChange(p); setActiveView(AppView.READER); }} 
-            deleteHighlight={(id) => setHighlights(prev => prev.filter(h => h.id !== id))} 
-          />
-        )}
-        {activeView === AppView.BOOKMARKS && (
-          <BookmarksList 
-            bookmarks={bookmarks} 
-            goToPage={(p) => { handlePageChange(p); setActiveView(AppView.READER); }} 
-            removeBookmark={(p) => setBookmarks(prev => prev.filter(b => b !== p))} 
-          />
-        )}
-      </main>
-
-      {!isFullScreen && <Controls pageNumber={pageNumber} numPages={numPages} scale={scale} activeView={activeView} setActiveView={setActiveView} onPageChange={handlePageChange} onZoomChange={setScale} hasFile={!!pdfDoc} doubleTapEnabled={doubleTapEnabled} toggleFullScreen={() => setIsFullScreen(!isFullScreen)} onFitToScreen={() => setFitToScreenTrigger(prev => prev + 1)} />}
-    </>
+    </div>
   );
 }

@@ -1,8 +1,56 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { ChatMessage, GeminiModel } from "../types";
 
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
+};
+
+// Lightweight categorizer that ONLY looks at the filename. 
+// This is much faster and more reliable than processing full PDF text.
+export const categorizeFileName = async (filename: string): Promise<string> => {
+  const ai = getAIClient();
+  const categories = [
+    "Finance", "Medical", "Work", "Education", 
+    "Technology", "Travel", "Personal", "General"
+  ];
+
+  try {
+    const prompt = `Classify this file based ONLY on its name: "${filename}"
+    
+    Categories:
+    - Finance (invoices, taxes, banking)
+    - Medical (health, doctors, prescriptions)
+    - Work (business, contracts, resumes)
+    - Education (school, books, homework)
+    - Technology (manuals, software, guides)
+    - Travel (tickets, bookings)
+    - Personal (photos, letters, journals)
+    
+    Return JSON: { "category": "CategoryName" }`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            category: { type: Type.STRING, enum: categories }
+          }
+        }
+      }
+    });
+
+    let jsonStr = response.text || "{}";
+    jsonStr = jsonStr.replace(/```json|```/g, '').trim();
+    const result = JSON.parse(jsonStr);
+    return result.category || "General";
+
+  } catch (e) {
+    console.warn("AI Categorization failed, falling back to General.");
+    return "General";
+  }
 };
 
 export const summarizeText = async (text: string, model: GeminiModel = 'gemini-3-flash-preview'): Promise<string> => {

@@ -71,6 +71,26 @@ export const saveFileToLibrary = async (file: File, thumbnail?: string): Promise
   });
 };
 
+export const updateFileSection = async (fileId: string, sectionId: string): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction(STORE_FILES, 'readwrite');
+  const store = tx.objectStore(STORE_FILES);
+  
+  return new Promise((resolve, reject) => {
+    const request = store.get(fileId);
+    request.onsuccess = () => {
+      if (request.result) {
+        request.result.sectionId = sectionId;
+        store.put(request.result);
+      } else {
+        resolve();
+      }
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => resolve();
+  });
+};
+
 export const saveCachedText = async (fileId: string, pageNumber: number, sentences: string[]): Promise<void> => {
   const db = await openDB();
   const tx = db.transaction(STORE_CACHED_TEXT, 'readwrite');
@@ -133,28 +153,29 @@ export const getRecentFiles = async (): Promise<any[]> => {
   });
 };
 
-export const updateFileSection = async (fileId: string, sectionId: string): Promise<void> => {
-  const db = await openDB();
-  const tx = db.transaction(STORE_FILES, 'readwrite');
-  const store = tx.objectStore(STORE_FILES);
-  const request = store.get(fileId);
-  return new Promise((resolve) => {
-    request.onsuccess = () => {
-      if (request.result) {
-        request.result.sectionId = sectionId;
-        store.put(request.result);
-      }
-      resolve();
-    };
-  });
-};
-
 export const removeFileFromLibrary = async (id: string): Promise<void> => {
   const db = await openDB();
   const tx = db.transaction([STORE_FILES, STORE_CACHED_TEXT], 'readwrite');
   tx.objectStore(STORE_FILES).delete(id);
   tx.objectStore(STORE_CACHED_TEXT).delete(id);
   return new Promise((resolve) => { tx.oncomplete = () => resolve(); });
+};
+
+export const deleteFiles = async (ids: string[]): Promise<void> => {
+  const db = await openDB();
+  const tx = db.transaction([STORE_FILES, STORE_CACHED_TEXT], 'readwrite');
+  const fileStore = tx.objectStore(STORE_FILES);
+  const cacheStore = tx.objectStore(STORE_CACHED_TEXT);
+
+  ids.forEach(id => {
+    fileStore.delete(id);
+    cacheStore.delete(id);
+  });
+
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 };
 
 export const saveSection = async (section: { id: string, name: string }): Promise<void> => {

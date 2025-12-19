@@ -4,8 +4,10 @@ import * as pdfjsModule from 'https://esm.sh/pdfjs-dist@3.11.174';
 const pdfjsLib = (pdfjsModule as any).default || pdfjsModule;
 
 // Initialize worker
+// Using unpkg for the worker source as it is often more reliable for direct linking in this context
+// This fixes the 'NetworkError' and 'importScripts' failures
 if (pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 }
 
 export const loadPDF = async (file: File): Promise<any> => {
@@ -20,6 +22,20 @@ export const extractPageText = async (page: any): Promise<string> => {
     .map((item: any) => item.str)
     .filter((str: string) => str.trim().length > 0)
     .join(' ');
+};
+
+export const extractTextFromDocument = async (pdf: any, maxPages = 3): Promise<string> => {
+  let fullText = '';
+  for (let i = 1; i <= Math.min(pdf.numPages, maxPages); i++) {
+    try {
+      const page = await pdf.getPage(i);
+      const text = await extractPageText(page);
+      fullText += text + ' ';
+    } catch (e) {
+      console.warn(`Error extracting text from page ${i}`, e);
+    }
+  }
+  return fullText.trim();
 };
 
 export const renderPageTextLayer = async (page: any, container: HTMLDivElement, scale: number) => {

@@ -99,6 +99,14 @@ export const Controls: React.FC<ControlsProps> = ({
                <i className="fa-solid fa-chevron-right text-sm"></i>
              </button>
 
+             <button 
+               onClick={onFitToScreen}
+               className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-gray-100 dark:hover:bg-white/10 transition-colors text-gray-500 dark:text-gray-400"
+               title="Fit Width"
+             >
+               <i className="fa-solid fa-mobile-screen text-sm"></i>
+             </button>
+
              <div className="w-px h-8 bg-gray-200 dark:bg-white/10 mx-2"></div>
 
              <button 

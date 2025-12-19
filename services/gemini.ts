@@ -8,27 +8,45 @@ const getAIClient = () => {
 // Lightweight categorizer that ONLY looks at the filename. 
 // This is much faster and more reliable than processing full PDF text.
 export const categorizeFileName = async (filename: string): Promise<string> => {
+  // Legacy single file support - wraps batch
+  const res = await batchCategorizeFiles([{ filename }]);
+  return res[filename] || "General";
+};
+
+export const batchCategorizeFiles = async (
+  items: Array<{filename: string, snippet?: string}>
+): Promise<Record<string, string>> => {
   const ai = getAIClient();
   const categories = [
     "Finance", "Medical", "Work", "Education", 
-    "Technology", "Travel", "Personal", "General"
+    "Technology", "Travel", "Personal", "Comics", "Books", "General"
   ];
 
   try {
-    const prompt = `Classify this file based ONLY on its name: "${filename}"
+    // Construct descriptions that include snippets if available
+    const filesList = items.map(i => {
+       const content = i.snippet ? `, Content Start: "${i.snippet.replace(/"/g, "'").substring(0, 300)}..."` : "";
+       return `{ "filename": "${i.filename}"${content} }`;
+    }).join(',\n    ');
+
+    const prompt = `Classify the following files into the most appropriate category based on filename and content preview.
     
-    If it sounds like a book, novel, textbook, or research paper, use "Education" or "Personal".
+    Guidelines:
+    - Comics: Manga, manhwa, graphic novels, issues, volumes, superhero names (e.g. Batman), webtoons.
+    - Books: Novels, non-fiction, biographies, anthologies, literary works.
+    - Education: Textbooks, research papers, homework, academic journals, syllabus.
+    - Work: Contracts, business docs, resumes, meeting minutes, proposals.
+    - Finance: Invoices, receipts, taxes, bank statements, bills.
+    - Technology: Manuals, code, specs, data logs, technical diagrams.
+    - Medical: Prescriptions, lab results, insurance claims.
+    - Travel: Tickets, itineraries, boarding passes.
     
-    Categories:
-    - Finance (invoices, taxes, banking, receipts)
-    - Medical (health, doctors, prescriptions, scans)
-    - Work (business, contracts, resumes, legal, proposals)
-    - Education (school, books, novels, textbooks, homework, research, math, science, history)
-    - Technology (manuals, software, guides, specs, code)
-    - Travel (tickets, bookings, passports)
-    - Personal (photos, letters, journals, recipes)
+    Input Data:
+    [
+    ${filesList}
+    ]
     
-    Return JSON: { "category": "CategoryName" }`;
+    Return a JSON array of objects with 'filename' and 'category'.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -36,22 +54,32 @@ export const categorizeFileName = async (filename: string): Promise<string> => {
       config: {
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            category: { type: Type.STRING, enum: categories }
+          type: Type.ARRAY,
+          items: {
+             type: Type.OBJECT,
+             properties: {
+                filename: { type: Type.STRING },
+                category: { type: Type.STRING, enum: categories }
+             }
           }
         }
       }
     });
 
-    let jsonStr = response.text || "{}";
+    let jsonStr = response.text || "[]";
     jsonStr = jsonStr.replace(/```json|```/g, '').trim();
-    const result = JSON.parse(jsonStr);
-    return result.category || "General";
+    const resultArr = JSON.parse(jsonStr) as Array<{filename: string, category: string}>;
+    
+    const map: Record<string, string> = {};
+    resultArr.forEach(item => {
+        map[item.filename] = item.category;
+    });
+    
+    return map;
 
   } catch (e) {
-    console.warn("AI Categorization failed, falling back to General.");
-    return "General";
+    console.warn("AI Batch Categorization failed.", e);
+    return {};
   }
 };
 

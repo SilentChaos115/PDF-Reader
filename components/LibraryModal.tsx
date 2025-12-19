@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { getRecentFiles, removeFileFromLibrary, getSections, saveSection, deleteSection, updateFileSection, deleteFiles } from '../services/db';
-import { loadPDF, extractTextFromDocument } from '../services/pdfHelper';
-import { categorizeFileName } from '../services/gemini';
+import { loadPDF, extractTextFromDocument, getFirstPageText } from '../services/pdfHelper';
+import { batchCategorizeFiles } from '../services/gemini';
 import { RecentFile, Section } from '../types';
 
 interface LibraryModalProps {
@@ -143,9 +143,17 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
   };
 
-  // --- RELIABLE SORTING ENGINE ---
-  const determineCategory = async (filename: string): Promise<string> => {
+  // --- OPTIMIZED SORTING ENGINE ---
+  // Returns category string if confident match found, else null (defer to AI)
+  const getRegexCategory = (filename: string): string | null => {
       const n = filename.toLowerCase();
+
+      // 0. Comics & Manga (Priority - prevent scattering)
+      // Checks for volumes, issues, chapters, common formats, and publishers
+      if (n.match(/comic|manga|manhwa|graphic\s*novel|webtoon|omnibus|tpb|tankobon/)) return 'Comics';
+      if (n.match(/vol\.|volume|issue|no\.|ch\.|chapter/)) return 'Comics';
+      if (n.match(/\s#\d+/) || n.match(/\sv\d+/) || n.match(/\sno\.?\d+/) || n.match(/cbr|cbz/)) return 'Comics';
+      if (n.match(/marvel|dc\s*comics|image\s*comics|dark\s*horse|shonen|jump|viz/)) return 'Comics';
 
       // 1. Finance (Strict)
       if (n.match(/invoice|bill|receipt|tax|bank|stmt|statement|finance|budget|cost|price|quote|order|purchase|payment|paystub|salary|expense|insurance|folio|trans|check|card/)) return 'Finance';
@@ -162,121 +170,166 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       // 5. Travel
       if (n.match(/ticket|flight|hotel|booking|reserv|itinerary|travel|trip|boarding|pass|visa|passport|confirm|airline|rail|train|bus/)) return 'Travel';
       
-      // 6. Education & Books (Expanded)
-      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|book|chapter|exam|test|quiz|math|science|physics|chem|biology|history|geography|english|lit|novel|fiction|story|textbook|workbook|volume|edition|ed\.|vol\./)) return 'Education';
+      // 6. Education (Textbooks/School)
+      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|exam|test|quiz|math|science|physics|chem|biology|history/)) return 'Education';
+
+      // 7. Books (Novels/General Reading) - Distinct from Education
+      if (n.match(/novel|fiction|story|textbook|workbook|edition|ed\.|anthology|biography|autobiography|paperback|hardcover|book/)) return 'Books';
       
-      // 7. Personal (Loose)
-      if (n.match(/recipe|food|cook|diet|menu|photo|img|pic|dsc|screen|shot|family|letter|note|journal|diary|personal|home|house|apt|apartment|rent|lease/)) return 'Personal';
+      // 8. Personal (Loose)
+      if (n.match(/recipe|food|cook|diet|menu|photo|img|pic|dsc|screen|shot|family|journal|diary|personal|home|house|apt|apartment|rent|lease/)) return 'Personal';
 
-      // 8. AI Fallback (Lightweight)
-      try {
-         const aiCategory = await categorizeFileName(filename);
-         if (aiCategory && aiCategory !== 'General') return aiCategory;
-      } catch (e) {
-         console.log("AI Sort skipped");
-      }
-
-      // 9. Default
-      return 'General';
+      return null;
   };
 
   const handleAutoOrganize = async () => {
-    // 1. Force refresh from DB to get latest state
+    // 1. Force refresh
     const latestFiles = await getRecentFiles();
-    
-    // 2. Filter for files that are explicitly uncategorized OR null OR empty string
     const uncategorized = latestFiles.filter(f => !f.sectionId || f.sectionId === 'uncategorized' || f.sectionId === '');
     
-    if (uncategorized.length === 0) {
-      // User feedback is crucial here
-      const shouldReorganizeAll = window.confirm("All files are already sorted! Do you want to re-check ALL files in the library? (This might move files you manually organized)");
-      if (!shouldReorganizeAll) return;
+    // Check if we need to process anything
+    const filesToProcess = uncategorized.length === 0 ? latestFiles : uncategorized;
+    if (filesToProcess.length === 0) {
+        alert("Library is empty.");
+        return;
     }
 
-    // If re-organizing all, use all files. Otherwise use uncategorized.
-    const filesToProcess = uncategorized.length === 0 ? latestFiles : uncategorized;
+    if (uncategorized.length === 0) {
+      if (!window.confirm("All files sorted! Re-scan entire library?")) return;
+    }
 
     setIsOrganizing(true);
-    setActiveTab('folders'); // Switch view so user sees the result
+    setActiveTab('folders');
+    setOrganizeProgress({ current: 0, total: filesToProcess.length, status: 'Analyzing patterns...' });
     
-    // Refresh sections to ensure we don't create duplicates
+    // Prepare Sections Map
     const latestSections = await getSections();
     const sectionMap = new Map<string, string>(); 
     latestSections.forEach(s => sectionMap.set(s.name.toLowerCase(), s.id));
-    
-    let movedCount = 0;
 
-    try {
-      for (let i = 0; i < filesToProcess.length; i++) {
-        const file = filesToProcess[i];
+    // Helper to get/create section ID
+    const getTargetSectionId = async (catName: string): Promise<string> => {
+        const key = catName.toLowerCase();
+        if (sectionMap.has(key)) return sectionMap.get(key)!;
         
-        // Update UI
+        const newId = Date.now().toString() + Math.floor(Math.random() * 1000);
+        const newSection = { id: newId, name: catName };
+        await saveSection(newSection);
+        sectionMap.set(key, newId);
+        setSections(prev => [...prev, newSection]);
+        return newId;
+    };
+
+    const moves: Array<{file: RecentFile, category: string}> = [];
+    const pendingAI: RecentFile[] = [];
+
+    // --- PHASE 1: Regex Sorting (Fast) ---
+    for (const file of filesToProcess) {
+        const regexCat = getRegexCategory(file.name);
+        if (regexCat) {
+            moves.push({ file, category: regexCat });
+        } else {
+            pendingAI.push(file);
+        }
+    }
+
+    // --- PHASE 2: Context Extraction & AI ---
+    if (pendingAI.length > 0) {
+        
+        // Prepare items with potential context scanning
+        // We use a limiter to process PDF loads in parallel but not all at once
+        const itemsToClassify: Array<{filename: string, snippet?: string}> = [];
+        
         setOrganizeProgress({ 
-            current: i + 1, 
+            current: moves.length, 
             total: filesToProcess.length, 
-            status: `Sorting: ${file.name}` 
+            status: `Quick-scanning ${pendingAI.length} documents...` 
         });
 
-        try {
-          // Determine Category
-          const categoryName = await determineCategory(file.name);
-          const catKey = categoryName.toLowerCase();
+        const processBatch = async (files: RecentFile[]) => {
+            const results = [];
+            // Process 4 files at a time to keep UI responsive
+            const CONCURRENCY = 4;
+            for (let i = 0; i < files.length; i += CONCURRENCY) {
+                const chunk = files.slice(i, i + CONCURRENCY);
+                const promises = chunk.map(async (file) => {
+                    // Fast scan: get first page text only
+                    const snippet = await getFirstPageText(file.data);
+                    return { filename: file.name, snippet };
+                });
+                const chunkResults = await Promise.all(promises);
+                results.push(...chunkResults);
+                
+                // Update progress visual
+                setOrganizeProgress(prev => ({ 
+                   ...prev, 
+                   current: prev.current + (chunk.length * 0.5) // Half credit for scanning
+                }));
+            }
+            return results;
+        };
 
-          // Get or Create Section ID
-          let targetSectionId = sectionMap.get(catKey);
-          
-          if (!targetSectionId) {
-             // Create new section
-             targetSectionId = Date.now().toString() + Math.floor(Math.random() * 1000);
-             const newSection = { id: targetSectionId, name: categoryName };
-             await saveSection(newSection);
-             
-             // Update local map
-             sectionMap.set(catKey, targetSectionId);
-             
-             // Update React state immediately to avoid UI flicker
-             setSections(prev => [...prev, newSection]);
-          }
+        const scannedItems = await processBatch(pendingAI);
+        itemsToClassify.push(...scannedItems);
 
-          // Move File only if it's not already there
-          if (file.sectionId !== targetSectionId) {
-            await updateFileSection(file.id, targetSectionId);
-            movedCount++;
-          }
-          
-          // Artificial delay for UX (so the user sees the progress bar moving)
-          await new Promise(r => setTimeout(r, 50));
-
-        } catch (err) {
-          console.error(`Failed to sort ${file.name}`, err);
+        // --- PHASE 3: Batch AI Classification ---
+        setOrganizeProgress(prev => ({ ...prev, status: 'AI Classifying...' }));
+        
+        const AI_CHUNK_SIZE = 15;
+        for (let i = 0; i < itemsToClassify.length; i += AI_CHUNK_SIZE) {
+            const chunk = itemsToClassify.slice(i, i + AI_CHUNK_SIZE);
+            
+            try {
+                const results = await batchCategorizeFiles(chunk);
+                chunk.forEach(item => {
+                    const cat = results[item.filename] || 'General';
+                    // Find original file object
+                    const originalFile = pendingAI.find(f => f.name === item.filename);
+                    if (originalFile) {
+                        moves.push({ file: originalFile, category: cat });
+                    }
+                });
+            } catch (e) {
+                // Fallback
+                chunk.forEach(item => {
+                    const originalFile = pendingAI.find(f => f.name === item.filename);
+                    if(originalFile) moves.push({ file: originalFile, category: 'General' });
+                });
+            }
+            
+            setOrganizeProgress(prev => ({ 
+                ...prev, 
+                current: Math.min(prev.total, prev.current + chunk.length)
+            }));
         }
-      }
-      
-      // Final Refresh
-      await loadData();
-      
-      // Expand all created folders
-      const allSectionIds = new Set(expandedSections);
-      sectionMap.forEach(id => allSectionIds.add(id));
-      setExpandedSections(allSectionIds);
-
-      // Success Message
-      setOrganizeProgress(prev => ({ ...prev, status: "Complete!" }));
-      setTimeout(() => {
-          setIsOrganizing(false);
-          // Only alert if we actually did something, otherwise it feels like it didn't work
-          if (movedCount > 0) {
-             alert(`Successfully organized ${movedCount} documents.`);
-          } else {
-             alert("Analysis complete. No changes were necessary.");
-          }
-      }, 500);
-
-    } catch (e) {
-      console.error("Critical Sort Error", e);
-      setIsOrganizing(false);
-      alert("Sort encountered an error. Please try again.");
     }
+
+    // --- PHASE 4: Execution ---
+    setOrganizeProgress(prev => ({ ...prev, status: 'Applying organization...' }));
+    
+    let movedCount = 0;
+    for (const move of moves) {
+        try {
+            const targetId = await getTargetSectionId(move.category);
+            if (move.file.sectionId !== targetId) {
+                await updateFileSection(move.file.id, targetId);
+                movedCount++;
+            }
+        } catch (e) {
+            console.error("Move failed", e);
+        }
+    }
+
+    // Final Cleanup
+    await loadData();
+    const allSectionIds = new Set(expandedSections);
+    sectionMap.forEach(id => allSectionIds.add(id));
+    setExpandedSections(allSectionIds);
+
+    setOrganizeProgress(prev => ({ ...prev, status: "Complete!" }));
+    setTimeout(() => {
+        setIsOrganizing(false);
+    }, 800);
   };
   // ------------------------------
 

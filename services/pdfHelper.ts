@@ -38,6 +38,31 @@ export const extractTextFromDocument = async (pdf: any, maxPages = 3): Promise<s
   return fullText.trim();
 };
 
+// Optimized for auto-categorization speed: loads only the first page text without rendering canvas
+export const getFirstPageText = async (file: File): Promise<string> => {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    // We use a loading task to ensure we can destroy the document afterwards to free memory
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    const page = await pdf.getPage(1);
+    const textContent = await page.getTextContent();
+    const text = textContent.items
+      .map((item: any) => item.str)
+      .filter((str: string) => str.trim().length > 0)
+      .join(' ');
+    
+    // Clean up
+    pdf.destroy();
+    
+    // Return first 600 chars which usually contains title/header info
+    return text.substring(0, 600).replace(/\s+/g, ' ').trim();
+  } catch (e) {
+    console.warn("Quick scan failed for file", file.name, e);
+    return "";
+  }
+};
+
 export const renderPageTextLayer = async (page: any, container: HTMLDivElement, scale: number) => {
   container.innerHTML = ''; // Clear previous text layer
   

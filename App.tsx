@@ -291,6 +291,7 @@ export default function App() {
       {isAudioPlayerVisible && pdfDoc && (
         <AudioPlayer 
           pdfDoc={pdfDoc} 
+          fileName={fileName || "Document"}
           fileId={fileId}
           pageNumber={pageNumber} 
           onPageChange={handlePageChange}

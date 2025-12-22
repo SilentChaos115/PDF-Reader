@@ -1,87 +1,130 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { ChatMessage, GeminiModel } from "../types";
+import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { ChatMessage, GeminiModel, BookMetadata, CategoryResult } from "../types";
 
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// Lightweight categorizer that ONLY looks at the filename. 
-// This is much faster and more reliable than processing full PDF text.
-export const categorizeFileName = async (filename: string): Promise<string> => {
-  // Legacy single file support - wraps batch
-  const res = await batchCategorizeFiles([{ filename }]);
-  return res[filename] || "General";
-};
+// --- Advanced Categorization ---
 
-export const batchCategorizeFiles = async (
-  items: Array<{filename: string, snippet?: string}>
-): Promise<Record<string, string>> => {
+export const categorizeBook = async (metadata: BookMetadata): Promise<CategoryResult> => {
   const ai = getAIClient();
-  const categories = [
-    "Finance", "Medical", "Work", "Education", 
-    "Technology", "Travel", "Personal", "Comics", "Books", "General"
+
+  // Predefined Folder Hierarchy
+  const hierarchy = [
+    "Technical/Coding",
+    "Technical/Hardware", 
+    "Technical/DataScience",
+    "Technical/Engineering",
+    "Education/Guides",
+    "Education/Textbooks",
+    "Education/Research",
+    "Fiction/Thriller",
+    "Fiction/SciFi",
+    "Fiction/Fantasy", 
+    "Fiction/General",
+    "History/Modern",
+    "History/Ancient",
+    "Business/Finance",
+    "Business/Management",
+    "Personal/Health",
+    "Personal/Finance",
+    "Comics/Manga",
+    "Comics/Western",
+    "Unsorted"
   ];
 
+  const systemInstruction = `
+    You are a Professional Library Metadata Specialist. Your task is to categorize books into specific, high-value folders.
+
+    CRITICAL RULE: Never use generic labels like "Book," "File," "Document," or "Reading Material." If a book is too hard to categorize, place it in "Unsorted" instead of a generic noun.
+
+    Available Folder Hierarchy:
+    ${hierarchy.map(h => `- ${h}`).join('\n')}
+
+    Instructions:
+    1. Analyze the filename, text snippet, and external subjects.
+    2. Use Chain-of-Thought reasoning to identify the specific subject matter.
+    3. Select the best matching folder from the hierarchy above.
+    4. If the input is ambiguous (e.g. "Python"), use the text snippet to differentiate (e.g. coding vs zoology).
+  `;
+
+  const prompt = `
+    Categorize this document:
+    
+    Filename: ${metadata.filename}
+    Inferred Title: ${metadata.title || 'Unknown'}
+    Author: ${metadata.author || 'Unknown'}
+    External Subjects (Open Library): ${metadata.openLibrarySubjects?.join(', ') || 'N/A'}
+    
+    Extracted Text Snippet (First 800 chars): 
+    "${metadata.extractedText.substring(0, 800)}"
+  `;
+
   try {
-    // Construct descriptions that include snippets if available
-    const filesList = items.map(i => {
-       const content = i.snippet ? `, Content Start: "${i.snippet.replace(/"/g, "'").substring(0, 300)}..."` : "";
-       return `{ "filename": "${i.filename}"${content} }`;
-    }).join(',\n    ');
-
-    const prompt = `Classify the following files into the most appropriate category based on filename and content preview.
-    
-    Guidelines:
-    - Comics: Manga, manhwa, graphic novels, issues, volumes, superhero names (e.g. Batman), webtoons.
-    - Books: Novels, non-fiction, biographies, anthologies, literary works.
-    - Education: Textbooks, research papers, homework, academic journals, syllabus.
-    - Work: Contracts, business docs, resumes, meeting minutes, proposals.
-    - Finance: Invoices, receipts, taxes, bank statements, bills.
-    - Technology: Manuals, code, specs, data logs, technical diagrams.
-    - Medical: Prescriptions, lab results, insurance claims.
-    - Travel: Tickets, itineraries, boarding passes.
-    
-    Input Data:
-    [
-    ${filesList}
-    ]
-    
-    Return a JSON array of objects with 'filename' and 'category'.`;
-
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: prompt,
       config: {
+        systemInstruction: systemInstruction,
         responseMimeType: "application/json",
         responseSchema: {
-          type: Type.ARRAY,
-          items: {
-             type: Type.OBJECT,
-             properties: {
-                filename: { type: Type.STRING },
-                category: { type: Type.STRING, enum: categories }
-             }
-          }
+           type: Type.OBJECT,
+           properties: {
+             title: { type: Type.STRING, description: "The clean, formatted title of the book." },
+             category: { type: Type.STRING, description: "The selected folder path from the hierarchy." },
+             reason: { type: Type.STRING, description: "One sentence explaining the reasoning." },
+             confidence: { type: Type.NUMBER, description: "Confidence score between 0 and 1." }
+           },
+           required: ["title", "category", "reason", "confidence"]
         }
       }
     });
 
-    let jsonStr = response.text || "[]";
-    jsonStr = jsonStr.replace(/```json|```/g, '').trim();
-    const resultArr = JSON.parse(jsonStr) as Array<{filename: string, category: string}>;
+    const result = JSON.parse(response.text || "{}");
     
-    const map: Record<string, string> = {};
-    resultArr.forEach(item => {
-        map[item.filename] = item.category;
-    });
-    
-    return map;
+    // Fallback if AI hallucinates a category outside hierarchy
+    let finalCategory = result.category;
+    if (!hierarchy.includes(finalCategory)) {
+        // Try to fuzzy match or default to Unsorted
+        const partialMatch = hierarchy.find(h => finalCategory.includes(h) || h.includes(finalCategory));
+        finalCategory = partialMatch || "Unsorted";
+    }
+
+    return {
+      title: result.title || metadata.filename,
+      category: finalCategory,
+      reason: result.reason || "AI processing",
+      confidence: result.confidence || 0.5
+    };
 
   } catch (e) {
-    console.warn("AI Batch Categorization failed.", e);
-    return {};
+    console.error("AI Categorization Error", e);
+    return {
+      title: metadata.filename,
+      category: "Unsorted",
+      reason: "Error in AI processing",
+      confidence: 0
+    };
   }
 };
+
+// --- Legacy / Batch (kept for fallback but updated to use new types if needed) ---
+
+export const batchCategorizeFiles = async (
+  items: Array<{filename: string, snippet?: string}>
+): Promise<Record<string, string>> => {
+    // This function is kept for backward compatibility if needed, 
+    // but the app should prefer categorizeBook for high accuracy.
+    // For now, we will just map simple file-only categorization for bulk.
+    // In a real refactor, we would loop categorizeBook.
+    const map: Record<string, string> = {};
+    for (const item of items) {
+        map[item.filename] = "Unsorted"; // Placeholder if not implementing bulk logic here
+    }
+    return map;
+};
+
 
 export const summarizeText = async (text: string, model: GeminiModel = 'gemini-3-flash-preview'): Promise<string> => {
   const ai = getAIClient();

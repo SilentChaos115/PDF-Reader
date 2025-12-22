@@ -16,6 +16,26 @@ export const loadPDF = async (file: File): Promise<any> => {
   return loadingTask.promise;
 };
 
+export const getPDFMetadata = async (file: File): Promise<{ title?: string, author?: string }> => {
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    
+    // Extract metadata from the PDF structure
+    const { info } = await pdf.getMetadata();
+    pdf.destroy();
+
+    return {
+      title: info?.Title && info.Title.trim() !== '' ? info.Title : undefined,
+      author: info?.Author && info.Author.trim() !== '' ? info.Author : undefined
+    };
+  } catch (e) {
+    console.warn("Failed to extract PDF metadata", e);
+    return {};
+  }
+};
+
 export const extractPageText = async (page: any): Promise<string> => {
   const textContent = await page.getTextContent();
   return textContent.items

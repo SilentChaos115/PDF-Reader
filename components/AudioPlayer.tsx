@@ -5,6 +5,7 @@ import { saveCachedText, getCachedText } from '../services/db';
 
 interface AudioPlayerProps {
   pdfDoc: PDFDocumentProxy;
+  fileName: string;
   fileId: string;
   pageNumber: number;
   onPageChange: (page: number) => void;
@@ -17,6 +18,7 @@ interface AudioPlayerProps {
 
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   pdfDoc,
+  fileName,
   fileId,
   pageNumber,
   onPageChange,
@@ -69,11 +71,13 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
-  // Initialize Silent Audio once
+  // Initialize Silent Audio for Lock Screen Persistence
+  // This loops a near-silent audio track to keep the browser process active
   useEffect(() => {
+    // 1 second of silent WAV
     const audio = new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==");
     audio.loop = true;
-    audio.volume = 0.01; 
+    audio.volume = 0.01; // Just enough to be considered "active"
     silentAudioRef.current = audio;
 
     return () => {
@@ -109,9 +113,17 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     setIsPlaying(shouldPlay);
     
     if (shouldPlay) {
-      // Immediate play interaction for mobile browsers
+      // IMPORTANT: User gesture required to start audio
       silentAudioRef.current?.play().catch(e => console.warn("Background audio start failed", e));
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      // If we are resuming, ensure synthesis resumes or restarts
+      if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+      } else {
+          // Force restart of current sentence if idle
+          window.speechSynthesis.cancel();
+          // The effect hook will pick this up and restart
+      }
     } else {
       silentAudioRef.current?.pause();
       window.speechSynthesis.pause(); 
@@ -119,48 +131,63 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     }
   }, [isPlaying]);
 
+  const handleStop = useCallback(() => {
+      setIsPlaying(false);
+      silentAudioRef.current?.pause();
+      window.speechSynthesis.cancel();
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+      onClose();
+  }, [onClose]);
+
   // Manage MediaSession (Metadata + Handlers)
-  // Re-run whenever navigation state changes to prevent stale closures
+  // Re-run whenever navigation state changes to prevent stale closures and update metadata
   useEffect(() => {
     if ('mediaSession' in navigator) {
-       // Update Metadata
-       if (sentences.length > 0) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: sentences[currentIndex] ? (sentences[currentIndex].substring(0, 40) + '...') : 'Reading...',
-            artist: 'ZenReader',
-            album: `Page ${pageNumber} (${currentIndex + 1}/${sentences.length})`,
-            artwork: [{ src: 'https://cdn-icons-png.flaticon.com/512/337/337946.png', sizes: '512x512', type: 'image/png' }]
-          });
+       // Update Metadata for Lock Screen
+       const currentText = sentences[currentIndex] ? sentences[currentIndex].substring(0, 100) : 'Loading...';
+       
+       navigator.mediaSession.metadata = new MediaMetadata({
+         title: fileName || "Document",
+         artist: "ZenReader AI",
+         album: `Page ${pageNumber} • Sentence ${currentIndex + 1}/${sentences.length}`,
+         artwork: [
+            { src: 'https://cdn-icons-png.flaticon.com/512/337/337946.png', sizes: '512x512', type: 'image/png' }
+         ]
+       });
 
-          if (navigator.mediaSession.setPositionState) {
-             navigator.mediaSession.setPositionState({
-                 duration: sentences.length,
-                 playbackRate: settings.speed,
-                 position: Math.min(currentIndex, sentences.length - 0.01)
-             });
-          }
+       if (navigator.mediaSession.setPositionState && sentences.length > 0) {
+          navigator.mediaSession.setPositionState({
+              duration: sentences.length,
+              playbackRate: settings.speed,
+              position: currentIndex
+          });
        }
 
-       // Update Handlers (Crucial: These capture current state closures)
+       // Update Handlers - Mapping to Spotify-style controls
        navigator.mediaSession.setActionHandler('play', () => { 
           setIsPlaying(true); 
           silentAudioRef.current?.play().catch(() => {});
        });
+       
        navigator.mediaSession.setActionHandler('pause', () => {
           setIsPlaying(false);
           silentAudioRef.current?.pause();
+          window.speechSynthesis.pause();
        });
-       navigator.mediaSession.setActionHandler('stop', () => { setIsPlaying(false); onClose(); });
+       
+       navigator.mediaSession.setActionHandler('stop', handleStop);
+       
        navigator.mediaSession.setActionHandler('seekto', (details) => {
           if (details.seekTime !== undefined && sentences.length > 0) {
               const newIdx = Math.min(Math.max(0, Math.floor(details.seekTime)), sentences.length - 1);
               setCurrentIndex(newIdx);
           }
       });
+      
       navigator.mediaSession.setActionHandler('nexttrack', handleNext);
       navigator.mediaSession.setActionHandler('previoustrack', handlePrev);
     }
-  }, [currentIndex, sentences, pageNumber, settings.speed, handleNext, handlePrev, onClose]);
+  }, [currentIndex, sentences, pageNumber, fileName, settings.speed, handleNext, handlePrev, handleStop]);
 
   // Load Content
   useEffect(() => {
@@ -282,7 +309,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
            >
              <i className="fa-solid fa-sliders text-sm"></i>
            </button>
-           <button onClick={onClose} className="text-gray-400 hover:text-red-500 transition-all p-2">
+           <button onClick={handleStop} className="text-gray-400 hover:text-red-500 transition-all p-2">
              <i className="fa-solid fa-times text-sm"></i>
            </button>
         </div>

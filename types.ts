@@ -3,6 +3,7 @@ export interface PDFDocumentProxy {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PDFPageProxy>;
   destroy: () => void;
+  getMetadata: () => Promise<{ info: any; metadata: any }>;
 }
 
 export interface PDFPageProxy {
@@ -87,4 +88,20 @@ export interface RecentFile {
   thumbnail?: string;
   sectionId?: string;
   data: File;
+}
+
+// AI Categorization Types
+export interface BookMetadata {
+  filename: string;
+  extractedText: string;
+  title?: string;
+  author?: string;
+  openLibrarySubjects?: string[];
+}
+
+export interface CategoryResult {
+  title: string;
+  category: string;
+  reason: string;
+  confidence: number;
 }

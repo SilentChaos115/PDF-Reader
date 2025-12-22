@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { getRecentFiles, removeFileFromLibrary, getSections, saveSection, deleteSection, updateFileSection, deleteFiles } from '../services/db';
-import { loadPDF, extractTextFromDocument, getFirstPageText } from '../services/pdfHelper';
-import { batchCategorizeFiles } from '../services/gemini';
+import { loadPDF, extractTextFromDocument, getFirstPageText, getPDFMetadata } from '../services/pdfHelper';
+import { categorizeBook } from '../services/gemini';
+import { getBookSubjects } from '../services/metadata';
 import { RecentFile, Section } from '../types';
 
 interface LibraryModalProps {
@@ -48,7 +49,6 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       setFiles(recents);
       setSections(storedSections);
       
-      // Auto-expand sections that have files if in folder view
       const newExpanded = new Set(expandedSections);
       storedSections.forEach(s => newExpanded.add(s.id));
       newExpanded.add('uncategorized');
@@ -63,7 +63,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       setSelectedIds(new Set()); 
       setShowBatchMove(false);
       setShowCreateFolderInput(false);
-      setSearchQuery(''); // Reset search on open
+      setSearchQuery(''); 
     } 
   }, [isOpen]);
 
@@ -92,7 +92,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
         await handleCreateFolder(newFolderName);
         setNewFolderName('');
         setShowCreateFolderInput(false);
-        setActiveTab('folders'); // Switch to folder view to see it
+        setActiveTab('folders'); 
     }
   };
 
@@ -143,51 +143,35 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
   };
 
-  // --- OPTIMIZED SORTING ENGINE ---
-  // Returns category string if confident match found, else null (defer to AI)
-  const getRegexCategory = (filename: string): string | null => {
-      const n = filename.toLowerCase();
+  // Helper to get/create section ID
+  const getTargetSectionId = async (catName: string, sectionMap: Map<string, string>): Promise<string> => {
+    const key = catName.toLowerCase();
+    if (sectionMap.has(key)) return sectionMap.get(key)!;
+    
+    // Check if hierarchical (e.g., Technical/Coding -> make just "Coding" folder or "Technical")
+    // For simplicity, we'll take the leaf node or the full string if we want deep nesting
+    // The previous implementation used flat folders, let's stick to flat folders named nicely
+    const displayName = catName.includes('/') ? catName.split('/').pop()! : catName;
+    
+    // Check again with leaf name
+    if (sectionMap.has(displayName.toLowerCase())) return sectionMap.get(displayName.toLowerCase())!;
 
-      // 0. Comics & Manga (Priority - prevent scattering)
-      // Checks for volumes, issues, chapters, common formats, and publishers
-      if (n.match(/comic|manga|manhwa|graphic\s*novel|webtoon|omnibus|tpb|tankobon/)) return 'Comics';
-      if (n.match(/vol\.|volume|issue|no\.|ch\.|chapter/)) return 'Comics';
-      if (n.match(/\s#\d+/) || n.match(/\sv\d+/) || n.match(/\sno\.?\d+/) || n.match(/cbr|cbz/)) return 'Comics';
-      if (n.match(/marvel|dc\s*comics|image\s*comics|dark\s*horse|shonen|jump|viz/)) return 'Comics';
-
-      // 1. Finance (Strict)
-      if (n.match(/invoice|bill|receipt|tax|bank|stmt|statement|finance|budget|cost|price|quote|order|purchase|payment|paystub|salary|expense|insurance|folio|trans|check|card/)) return 'Finance';
-      
-      // 2. Work / Legal (Strict)
-      if (n.match(/resume|cv|job|career|contract|agreement|nda|legal|law|proposal|brief|meeting|agenda|minutes|report|strategy|plan|project|presentation|slide|pitch|deck|memo|draft|signed|employment|offer|letter|business/)) return 'Work';
-      
-      // 3. Medical (Strict)
-      if (n.match(/medical|health|doctor|dr\.|clinic|hospital|rx|prescript|lab|result|diagnosis|scan|xray|mri|patient|benefit|coverage|claim|appointment|vaccine|immunization/)) return 'Medical';
-      
-      // 4. Technology / Manuals
-      if (n.match(/manual|guide|instruction|setup|install|config|tech|spec|data|code|software|app|user|developer|api|sdk|network|server|log|error|debug|diagram|schematic|programming|python|javascript|java|cpp|html|css/)) return 'Technology';
-      
-      // 5. Travel
-      if (n.match(/ticket|flight|hotel|booking|reserv|itinerary|travel|trip|boarding|pass|visa|passport|confirm|airline|rail|train|bus/)) return 'Travel';
-      
-      // 6. Education (Textbooks/School)
-      if (n.match(/school|homework|assignment|grade|transcript|diploma|cert|degree|thesis|essay|paper|study|course|class|lecture|syllabus|exam|test|quiz|math|science|physics|chem|biology|history/)) return 'Education';
-
-      // 7. Books (Novels/General Reading) - Distinct from Education
-      if (n.match(/novel|fiction|story|textbook|workbook|edition|ed\.|anthology|biography|autobiography|paperback|hardcover|book/)) return 'Books';
-      
-      // 8. Personal (Loose)
-      if (n.match(/recipe|food|cook|diet|menu|photo|img|pic|dsc|screen|shot|family|journal|diary|personal|home|house|apt|apartment|rent|lease/)) return 'Personal';
-
-      return null;
+    const newId = Date.now().toString() + Math.floor(Math.random() * 1000);
+    const newSection = { id: newId, name: displayName };
+    await saveSection(newSection);
+    
+    // Update local state to reflect new section immediately
+    setSections(prev => [...prev, newSection]);
+    sectionMap.set(displayName.toLowerCase(), newId);
+    
+    return newId;
   };
 
+  // --- SMART SORT PIPELINE ---
   const handleAutoOrganize = async () => {
-    // 1. Force refresh
     const latestFiles = await getRecentFiles();
     const uncategorized = latestFiles.filter(f => !f.sectionId || f.sectionId === 'uncategorized' || f.sectionId === '');
     
-    // Check if we need to process anything
     const filesToProcess = uncategorized.length === 0 ? latestFiles : uncategorized;
     if (filesToProcess.length === 0) {
         alert("Library is empty.");
@@ -195,132 +179,60 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     }
 
     if (uncategorized.length === 0) {
-      if (!window.confirm("All files sorted! Re-scan entire library?")) return;
+      if (!window.confirm("All files sorted! Re-scan entire library using Smart Sort?")) return;
     }
 
     setIsOrganizing(true);
     setActiveTab('folders');
-    setOrganizeProgress({ current: 0, total: filesToProcess.length, status: 'Analyzing patterns...' });
+    setOrganizeProgress({ current: 0, total: filesToProcess.length, status: 'Initializing Smart Sort...' });
     
-    // Prepare Sections Map
     const latestSections = await getSections();
     const sectionMap = new Map<string, string>(); 
     latestSections.forEach(s => sectionMap.set(s.name.toLowerCase(), s.id));
 
-    // Helper to get/create section ID
-    const getTargetSectionId = async (catName: string): Promise<string> => {
-        const key = catName.toLowerCase();
-        if (sectionMap.has(key)) return sectionMap.get(key)!;
+    const CONCURRENCY = 3; // Lower concurrency due to heavy API usage
+
+    for (let i = 0; i < filesToProcess.length; i += CONCURRENCY) {
+        const chunk = filesToProcess.slice(i, i + CONCURRENCY);
         
-        const newId = Date.now().toString() + Math.floor(Math.random() * 1000);
-        const newSection = { id: newId, name: catName };
-        await saveSection(newSection);
-        sectionMap.set(key, newId);
-        setSections(prev => [...prev, newSection]);
-        return newId;
-    };
+        await Promise.all(chunk.map(async (file) => {
+             setOrganizeProgress(prev => ({ ...prev, status: `Analyzing: ${file.name}` }));
 
-    const moves: Array<{file: RecentFile, category: string}> = [];
-    const pendingAI: RecentFile[] = [];
+             // 1. Extract Info
+             const [extractedText, pdfMeta] = await Promise.all([
+                 getFirstPageText(file.data),
+                 getPDFMetadata(file.data)
+             ]);
 
-    // --- PHASE 1: Regex Sorting (Fast) ---
-    for (const file of filesToProcess) {
-        const regexCat = getRegexCategory(file.name);
-        if (regexCat) {
-            moves.push({ file, category: regexCat });
-        } else {
-            pendingAI.push(file);
-        }
+             // 2. Fetch External Data
+             let subjects: string[] = [];
+             const searchTitle = pdfMeta.title || file.name.replace(/\.pdf$/i, '').replace(/_/g, ' ');
+             if (searchTitle.length > 3) {
+                 subjects = await getBookSubjects(searchTitle);
+             }
+
+             // 3. AI Categorization
+             const aiResult = await categorizeBook({
+                 filename: file.name,
+                 extractedText: extractedText,
+                 title: pdfMeta.title,
+                 author: pdfMeta.author,
+                 openLibrarySubjects: subjects
+             });
+
+             // 4. Move File
+             if (aiResult.category !== 'Unsorted') {
+                 const targetId = await getTargetSectionId(aiResult.category, sectionMap);
+                 if (file.sectionId !== targetId) {
+                     await updateFileSection(file.id, targetId);
+                 }
+             }
+
+             setOrganizeProgress(prev => ({ ...prev, current: prev.current + 1 }));
+        }));
     }
 
-    // --- PHASE 2: Context Extraction & AI ---
-    if (pendingAI.length > 0) {
-        
-        // Prepare items with potential context scanning
-        // We use a limiter to process PDF loads in parallel but not all at once
-        const itemsToClassify: Array<{filename: string, snippet?: string}> = [];
-        
-        setOrganizeProgress({ 
-            current: moves.length, 
-            total: filesToProcess.length, 
-            status: `Quick-scanning ${pendingAI.length} documents...` 
-        });
-
-        const processBatch = async (files: RecentFile[]) => {
-            const results = [];
-            // Process 4 files at a time to keep UI responsive
-            const CONCURRENCY = 4;
-            for (let i = 0; i < files.length; i += CONCURRENCY) {
-                const chunk = files.slice(i, i + CONCURRENCY);
-                const promises = chunk.map(async (file) => {
-                    // Fast scan: get first page text only
-                    const snippet = await getFirstPageText(file.data);
-                    return { filename: file.name, snippet };
-                });
-                const chunkResults = await Promise.all(promises);
-                results.push(...chunkResults);
-                
-                // Update progress visual
-                setOrganizeProgress(prev => ({ 
-                   ...prev, 
-                   current: prev.current + (chunk.length * 0.5) // Half credit for scanning
-                }));
-            }
-            return results;
-        };
-
-        const scannedItems = await processBatch(pendingAI);
-        itemsToClassify.push(...scannedItems);
-
-        // --- PHASE 3: Batch AI Classification ---
-        setOrganizeProgress(prev => ({ ...prev, status: 'AI Classifying...' }));
-        
-        const AI_CHUNK_SIZE = 15;
-        for (let i = 0; i < itemsToClassify.length; i += AI_CHUNK_SIZE) {
-            const chunk = itemsToClassify.slice(i, i + AI_CHUNK_SIZE);
-            
-            try {
-                const results = await batchCategorizeFiles(chunk);
-                chunk.forEach(item => {
-                    const cat = results[item.filename] || 'General';
-                    // Find original file object
-                    const originalFile = pendingAI.find(f => f.name === item.filename);
-                    if (originalFile) {
-                        moves.push({ file: originalFile, category: cat });
-                    }
-                });
-            } catch (e) {
-                // Fallback
-                chunk.forEach(item => {
-                    const originalFile = pendingAI.find(f => f.name === item.filename);
-                    if(originalFile) moves.push({ file: originalFile, category: 'General' });
-                });
-            }
-            
-            setOrganizeProgress(prev => ({ 
-                ...prev, 
-                current: Math.min(prev.total, prev.current + chunk.length)
-            }));
-        }
-    }
-
-    // --- PHASE 4: Execution ---
-    setOrganizeProgress(prev => ({ ...prev, status: 'Applying organization...' }));
-    
-    let movedCount = 0;
-    for (const move of moves) {
-        try {
-            const targetId = await getTargetSectionId(move.category);
-            if (move.file.sectionId !== targetId) {
-                await updateFileSection(move.file.id, targetId);
-                movedCount++;
-            }
-        } catch (e) {
-            console.error("Move failed", e);
-        }
-    }
-
-    // Final Cleanup
+    // Cleanup
     await loadData();
     const allSectionIds = new Set(expandedSections);
     sectionMap.forEach(id => allSectionIds.add(id));
@@ -329,7 +241,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     setOrganizeProgress(prev => ({ ...prev, status: "Complete!" }));
     setTimeout(() => {
         setIsOrganizing(false);
-    }, 800);
+    }, 1500);
   };
   // ------------------------------
 
@@ -397,7 +309,6 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const currentFiles = getFilteredFiles();
   const sortedAllFiles = getSortedFiles(currentFiles);
   
-  // Group only the filtered files to avoid confusion when searching
   const groupedFiles: Record<string, RecentFile[]> = { 
     uncategorized: getSortedFiles(currentFiles.filter(f => !f.sectionId || f.sectionId === 'uncategorized')) 
   };
@@ -438,7 +349,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                    className="px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all bg-gradient-to-r from-purple-500/20 to-mblue/20 dark:from-purple-500/20 dark:to-gold/20 text-purple-600 dark:text-gold border border-purple-500/30 dark:border-gold/30 hover:scale-105 flex items-center gap-2 whitespace-nowrap"
                  >
                    <i className="fa-solid fa-wand-magic-sparkles"></i>
-                   <span className="hidden sm:inline">Auto Organize</span>
+                   <span className="hidden sm:inline">Smart Sort</span>
                  </button>
                 <button 
                   onClick={() => setShowCreateFolderInput(true)}

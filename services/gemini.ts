@@ -5,6 +5,8 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // --- Advanced Categorization ---
 
 export const categorizeBook = async (metadata: BookMetadata): Promise<CategoryResult> => {
@@ -34,93 +36,114 @@ export const categorizeBook = async (metadata: BookMetadata): Promise<CategoryRe
     "Unsorted"
   ];
 
+  // Compact instruction to save tokens
   const systemInstruction = `
-    You are a Professional Library Metadata Specialist. Your task is to categorize books into specific, high-value folders.
-
-    CRITICAL RULE: Never use generic labels like "Book," "File," "Document," or "Reading Material." If a book is too hard to categorize, place it in "Unsorted" instead of a generic noun.
-
-    Available Folder Hierarchy:
-    ${hierarchy.map(h => `- ${h}`).join('\n')}
-
-    Instructions:
-    1. Analyze the filename, text snippet, and external subjects.
-    2. Use Chain-of-Thought reasoning to identify the specific subject matter.
-    3. Select the best matching folder from the hierarchy above.
-    4. If the input is ambiguous (e.g. "Python"), use the text snippet to differentiate (e.g. coding vs zoology).
+    Categorize books into: ${hierarchy.join(', ')}.
+    Rule: No generic labels (e.g. "Book"). Use "Unsorted" if unclear.
   `;
 
+  // Reduced snippet length (600) to save tokens
   const prompt = `
-    Categorize this document:
-    
-    Filename: ${metadata.filename}
-    Inferred Title: ${metadata.title || 'Unknown'}
+    File: ${metadata.filename}
+    Title: ${metadata.title || 'Unknown'}
     Author: ${metadata.author || 'Unknown'}
-    External Subjects (Open Library): ${metadata.openLibrarySubjects?.join(', ') || 'N/A'}
-    
-    Extracted Text Snippet (First 800 chars): 
-    "${metadata.extractedText.substring(0, 800)}"
+    Subjects: ${metadata.openLibrarySubjects?.slice(0, 3).join(', ') || 'N/A'}
+    Snippet: "${metadata.extractedText.substring(0, 600)}"
   `;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: prompt,
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: {
-           type: Type.OBJECT,
-           properties: {
-             title: { type: Type.STRING, description: "The clean, formatted title of the book." },
-             category: { type: Type.STRING, description: "The selected folder path from the hierarchy." },
-             reason: { type: Type.STRING, description: "One sentence explaining the reasoning." },
-             confidence: { type: Type.NUMBER, description: "Confidence score between 0 and 1." }
-           },
-           required: ["title", "category", "reason", "confidence"]
+  let attempts = 0;
+  const maxAttempts = 3; // Reduced internal retries as the Queue handles long waits
+
+  while (attempts < maxAttempts) {
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          systemInstruction: systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+             type: Type.OBJECT,
+             properties: {
+               title: { type: Type.STRING },
+               category: { type: Type.STRING },
+               reason: { type: Type.STRING },
+               confidence: { type: Type.NUMBER }
+             },
+             required: ["title", "category", "reason", "confidence"]
+          }
         }
+      });
+
+      const result = JSON.parse(response.text || "{}");
+      
+      let finalCategory = result.category;
+      if (!hierarchy.includes(finalCategory)) {
+          const partialMatch = hierarchy.find(h => finalCategory.includes(h) || h.includes(finalCategory));
+          finalCategory = partialMatch || "Unsorted";
       }
-    });
 
-    const result = JSON.parse(response.text || "{}");
-    
-    // Fallback if AI hallucinates a category outside hierarchy
-    let finalCategory = result.category;
-    if (!hierarchy.includes(finalCategory)) {
-        // Try to fuzzy match or default to Unsorted
-        const partialMatch = hierarchy.find(h => finalCategory.includes(h) || h.includes(finalCategory));
-        finalCategory = partialMatch || "Unsorted";
+      return {
+        title: result.title || metadata.filename,
+        category: finalCategory,
+        reason: result.reason || "AI processing",
+        confidence: result.confidence || 0.5
+      };
+
+    } catch (e: any) {
+      let isRateLimit = false;
+
+      if (e.status === 429) isRateLimit = true;
+      if (e.response?.status === 429) isRateLimit = true;
+      if (e.error?.code === 429) isRateLimit = true;
+      if (e.error?.status === 'RESOURCE_EXHAUSTED') isRateLimit = true;
+      
+      const msg = e.message || (e.error?.message) || '';
+      if (typeof msg === 'string' && (msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED'))) {
+         isRateLimit = true;
+      }
+
+      // If Rate limit, propagate it up to the Queue manager immediately after 1 quick internal retry
+      if (isRateLimit) {
+          if (attempts < 1) {
+              attempts++;
+              await delay(2000); 
+              continue;
+          }
+          console.warn("Gemini Rate Limit Hit - propagating to queue manager.");
+          return {
+            title: metadata.filename,
+            category: "Unsorted",
+            reason: "Quota Exceeded", // Key string used by LibraryModal to trigger 60s pause
+            confidence: 0
+          };
+      }
+
+      console.error("AI Categorization Error", e);
+      // For other errors (hallucination/format), just fail safely
+      return {
+        title: metadata.filename,
+        category: "Unsorted",
+        reason: "Error in AI processing",
+        confidence: 0
+      };
     }
+  }
 
-    return {
-      title: result.title || metadata.filename,
-      category: finalCategory,
-      reason: result.reason || "AI processing",
-      confidence: result.confidence || 0.5
-    };
-
-  } catch (e) {
-    console.error("AI Categorization Error", e);
-    return {
+  return {
       title: metadata.filename,
       category: "Unsorted",
-      reason: "Error in AI processing",
+      reason: "Failed after max retries",
       confidence: 0
-    };
-  }
+  };
 };
-
-// --- Legacy / Batch (kept for fallback but updated to use new types if needed) ---
 
 export const batchCategorizeFiles = async (
   items: Array<{filename: string, snippet?: string}>
 ): Promise<Record<string, string>> => {
-    // This function is kept for backward compatibility if needed, 
-    // but the app should prefer categorizeBook for high accuracy.
-    // For now, we will just map simple file-only categorization for bulk.
-    // In a real refactor, we would loop categorizeBook.
     const map: Record<string, string> = {};
     for (const item of items) {
-        map[item.filename] = "Unsorted"; // Placeholder if not implementing bulk logic here
+        map[item.filename] = "Unsorted";
     }
     return map;
 };

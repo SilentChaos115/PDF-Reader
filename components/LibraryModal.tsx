@@ -14,6 +14,22 @@ interface LibraryModalProps {
 
 type SortOption = 'date' | 'name' | 'size';
 
+// Optimization: Local keyword mapping to save API calls
+const KEYWORD_CATEGORIES: Record<string, string[]> = {
+    "Technical/Coding": ["python", "javascript", "typescript", "rust", "golang", "c++", "programming", "code", "react", "vue", "angular", "node", "web dev", "developer", "software"],
+    "Technical/Hardware": ["arduino", "raspberry pi", "circuit", "pcb", "hardware", "robotics", "electronics"],
+    "Technical/DataScience": ["data science", "machine learning", "neural network", "ai", "artificial intelligence", "statistics", "analytics"],
+    "Fiction/SciFi": ["sci-fi", "science fiction", "space opera", "alien", "star wars", "trek", "dune", "galaxy"],
+    "Fiction/Fantasy": ["fantasy", "dragon", "magic", "wizard", "tolkien", "sword", "dungeons"],
+    "Fiction/Thriller": ["thriller", "mystery", "crime", "detective", "murder", "suspense"],
+    "Business/Finance": ["finance", "investing", "stock", "market", "economics", "business", "money", "wealth", "entrepreneur", "marketing"],
+    "Personal/Health": ["health", "diet", "fitness", "workout", "yoga", "meditation", "medical", "anatomy", "nutrition", "cookbook"],
+    "History/Ancient": ["ancient", "rome", "greece", "egypt", "mythology", "bc"],
+    "History/Modern": ["wwii", "world war", "cold war", "history", "modern"],
+    "Education/Textbooks": ["textbook", "handbook", "manual", "guide", "introduction to", "primer"],
+    "Comics/Manga": ["manga", "comic", "volume", "vol.", "chapter"]
+};
+
 export const LibraryModal: React.FC<LibraryModalProps> = ({
   isOpen,
   onClose,
@@ -29,7 +45,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   const [activeTab, setActiveTab] = useState<'all' | 'folders'>('all');
   const [showCreateFolderInput, setShowCreateFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
-  const [sortBy, setSortBy] = useState<SortOption>('date');
+  const [sortBy, setSortBy] = useState<SortOption>('name'); // Default to 'name' for natural sort priority
   const [searchQuery, setSearchQuery] = useState('');
   
   // Selection & Batch Operations
@@ -41,6 +57,7 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
   // Auto Organization State
   const [isOrganizing, setIsOrganizing] = useState(false);
   const [organizeProgress, setOrganizeProgress] = useState({ current: 0, total: 0, status: '' });
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
 
   const loadData = async () => {
     setLoading(true);
@@ -149,8 +166,6 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     if (sectionMap.has(key)) return sectionMap.get(key)!;
     
     // Check if hierarchical (e.g., Technical/Coding -> make just "Coding" folder or "Technical")
-    // For simplicity, we'll take the leaf node or the full string if we want deep nesting
-    // The previous implementation used flat folders, let's stick to flat folders named nicely
     const displayName = catName.includes('/') ? catName.split('/').pop()! : catName;
     
     // Check again with leaf name
@@ -182,6 +197,10 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
       if (!window.confirm("All files sorted! Re-scan entire library using Smart Sort?")) return;
     }
 
+    // Abort Controller for stopping the process
+    const controller = new AbortController();
+    setAbortController(controller);
+
     setIsOrganizing(true);
     setActiveTab('folders');
     setOrganizeProgress({ current: 0, total: filesToProcess.length, status: 'Initializing Smart Sort...' });
@@ -190,46 +209,109 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     const sectionMap = new Map<string, string>(); 
     latestSections.forEach(s => sectionMap.set(s.name.toLowerCase(), s.id));
 
-    const CONCURRENCY = 3; // Lower concurrency due to heavy API usage
+    // Queue Processing
+    const queue = [...filesToProcess];
+    let consecutiveErrors = 0;
 
-    for (let i = 0; i < filesToProcess.length; i += CONCURRENCY) {
-        const chunk = filesToProcess.slice(i, i + CONCURRENCY);
-        
-        await Promise.all(chunk.map(async (file) => {
-             setOrganizeProgress(prev => ({ ...prev, status: `Analyzing: ${file.name}` }));
+    // Process One by One
+    while (queue.length > 0) {
+        if (controller.signal.aborted) break;
 
-             // 1. Extract Info
-             const [extractedText, pdfMeta] = await Promise.all([
-                 getFirstPageText(file.data),
-                 getPDFMetadata(file.data)
-             ]);
+        const file = queue.shift();
+        if (!file) break;
 
-             // 2. Fetch External Data
-             let subjects: string[] = [];
-             const searchTitle = pdfMeta.title || file.name.replace(/\.pdf$/i, '').replace(/_/g, ' ');
-             if (searchTitle.length > 3) {
-                 subjects = await getBookSubjects(searchTitle);
-             }
+        setOrganizeProgress(prev => ({ 
+            ...prev, 
+            current: filesToProcess.length - queue.length, 
+            status: `Analyzing: ${file.name}` 
+        }));
 
-             // 3. AI Categorization
-             const aiResult = await categorizeBook({
-                 filename: file.name,
-                 extractedText: extractedText,
-                 title: pdfMeta.title,
-                 author: pdfMeta.author,
-                 openLibrarySubjects: subjects
-             });
+        try {
+            // 1. Check Local Keywords FIRST (Zero API Cost)
+            let category: string | null = null;
+            const searchStr = file.name.toLowerCase();
+            
+            for (const [cat, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+                if (keywords.some(k => searchStr.includes(k))) {
+                    category = cat;
+                    console.log(`[Optimization] Local match for ${file.name}: ${cat}`);
+                    break;
+                }
+            }
 
-             // 4. Move File
-             if (aiResult.category !== 'Unsorted') {
-                 const targetId = await getTargetSectionId(aiResult.category, sectionMap);
+            // 2. If no local match, proceed with Heavy Lifting
+            if (!category) {
+                 // Extract Info
+                 const [extractedText, pdfMeta] = await Promise.all([
+                     getFirstPageText(file.data),
+                     getPDFMetadata(file.data)
+                 ]);
+
+                 // Double check keywords with PDF Title if available
+                 if (pdfMeta.title) {
+                     const titleLower = pdfMeta.title.toLowerCase();
+                     for (const [cat, keywords] of Object.entries(KEYWORD_CATEGORIES)) {
+                        if (keywords.some(k => titleLower.includes(k))) {
+                            category = cat;
+                            break;
+                        }
+                    }
+                 }
+
+                 // Still no category? Call AI.
+                 if (!category) {
+                     // Fetch subjects
+                     let subjects: string[] = [];
+                     const searchTitle = pdfMeta.title || file.name.replace(/\.pdf$/i, '').replace(/_/g, ' ');
+                     if (searchTitle.length > 3) {
+                         subjects = await getBookSubjects(searchTitle);
+                     }
+
+                     const aiResult = await categorizeBook({
+                         filename: file.name,
+                         extractedText: extractedText,
+                         title: pdfMeta.title,
+                         author: pdfMeta.author,
+                         openLibrarySubjects: subjects
+                     });
+
+                     if (aiResult.reason.includes("Quota Exceeded")) {
+                         // QUOTA HIT: Push back to queue, wait, and continue
+                         if (consecutiveErrors < 3) {
+                             setOrganizeProgress(prev => ({ ...prev, status: "API Quota Limit. Pausing for 60s..." }));
+                             console.warn("Quota Hit. Pausing queue...");
+                             queue.unshift(file); // Put it back
+                             await new Promise(r => setTimeout(r, 60000)); // 60s cooldown
+                             consecutiveErrors++;
+                             continue;
+                         } else {
+                             // Too many errors, skip this file or stop
+                             setOrganizeProgress(prev => ({ ...prev, status: "Skipping file due to API limits." }));
+                             consecutiveErrors = 0; // Reset for next file
+                             category = "Unsorted";
+                         }
+                     } else {
+                         category = aiResult.category;
+                         consecutiveErrors = 0;
+                     }
+                 }
+            }
+
+            // 3. Move File
+            if (category && category !== 'Unsorted') {
+                 const targetId = await getTargetSectionId(category, sectionMap);
                  if (file.sectionId !== targetId) {
                      await updateFileSection(file.id, targetId);
                  }
-             }
+            }
 
-             setOrganizeProgress(prev => ({ ...prev, current: prev.current + 1 }));
-        }));
+            // Standard Rate Limit Delay (only if we did an API call, but safe to do always)
+            // If we did a local match, we can go faster, but let's keep it visually pleasant
+            await new Promise(r => setTimeout(r, category ? 800 : 4000));
+
+        } catch (e) {
+            console.error("Processing failed for", file.name, e);
+        }
     }
 
     // Cleanup
@@ -241,7 +323,17 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
     setOrganizeProgress(prev => ({ ...prev, status: "Complete!" }));
     setTimeout(() => {
         setIsOrganizing(false);
+        setAbortController(null);
     }, 1500);
+  };
+
+  const cancelOrganization = () => {
+    if (abortController) {
+        abortController.abort();
+        setIsOrganizing(false);
+        setAbortController(null);
+        loadData();
+    }
   };
   // ------------------------------
 
@@ -253,9 +345,14 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
 
   const getSortedFiles = (fileList: RecentFile[]) => {
     return [...fileList].sort((a, b) => {
-      if (sortBy === 'name') return a.name.localeCompare(b.name);
+      if (sortBy === 'name') {
+          // Natural Sort using Intl.Collator: Correctly handles "Book 2" before "Book 10"
+          const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+          return collator.compare(a.name, b.name);
+      }
       if (sortBy === 'size') return b.size - a.size;
-      return b.date - a.date;
+      // Use dateAdded if available for stable import order, fallback to regular date
+      return ((b as any).dateAdded || b.date) - ((a as any).dateAdded || a.date);
     });
   };
 
@@ -413,7 +510,10 @@ export const LibraryModal: React.FC<LibraryModalProps> = ({
                     <div className="absolute inset-0 rounded-full border-2 border-t-purple-500 dark:border-t-gold animate-spin"></div>
                  </div>
                  <div className="flex flex-col overflow-hidden">
-                    <h4 className="text-xs font-bold dark:text-gold">Organizing Library...</h4>
+                    <div className="flex justify-between items-center mb-1">
+                      <h4 className="text-xs font-bold dark:text-gold">Organizing Library...</h4>
+                      <button onClick={cancelOrganization} className="text-[9px] text-red-500 hover:text-red-600 uppercase font-bold">Stop</button>
+                    </div>
                     <p className="text-[10px] text-gray-500 truncate w-48">{organizeProgress.status}</p>
                     <div className="w-full bg-gray-200 dark:bg-white/10 h-1 mt-2 rounded-full overflow-hidden">
                         <div 

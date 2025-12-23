@@ -10,7 +10,7 @@ import { LibraryModal } from './components/LibraryModal';
 import { AudioPlayer } from './components/AudioPlayer';
 import { DraggableFab } from './components/DraggableFab';
 import { loadPDF, generatePDFThumbnail } from './services/pdfHelper';
-import { saveFileToLibrary, updateFileDate, updateFileSection } from './services/db';
+import { saveFileToLibrary, updateFileDate, updateFileSection, resetAppDatabase } from './services/db';
 import { PDFDocumentProxy, AppView, Highlight, GeminiModel, ChatMessage, AudioCursor, HighlightStyle } from './types';
 
 export default function App() {
@@ -151,6 +151,40 @@ export default function App() {
   // Helper to toggle UI visibility on tap
   const toggleUi = () => setUiVisible(!uiVisible);
 
+  // Safe State Reset for Total Vault Reset
+  const handleTotalReset = async () => {
+    // 1. Unload PDF immediately to release file locks / prevent "file moved" errors
+    if (pdfDoc) {
+        try {
+            pdfDoc.destroy();
+        } catch(e) {}
+    }
+    setPdfDoc(null);
+    setFileName(null);
+    setFileSize(0);
+    setPageNumber(1);
+    setIsAudioPlayerVisible(false);
+    
+    // 2. Perform DB Wipe
+    const success = await resetAppDatabase();
+    
+    // 3. Reset UI State (Safety Fallback)
+    setBookmarks([]);
+    setNotes('');
+    setHighlights([]);
+    setChatHistory([]);
+    setAudioCursor(undefined);
+    
+    // 4. Return to "Landing" State
+    setIsSettingsOpen(false);
+    setIsLibraryOpen(true);
+    
+    if (!success) {
+        // Fallback message if DB wipe had issues, but UI state is still cleared
+        alert("Reset completed with warnings. Default settings restored.");
+    }
+  };
+
   return (
     <div className="h-full w-full relative overflow-hidden bg-paper dark:bg-darkbg text-gray-900 dark:text-white">
       
@@ -246,6 +280,7 @@ export default function App() {
         swipeEnabled={swipeEnabled} setSwipeEnabled={setSwipeEnabled}
         selectedModel={selectedModel} setSelectedModel={setSelectedModel}
         audioSettings={audioSettings} setAudioSettings={setAudioSettings}
+        onReset={handleTotalReset}
       />
 
       <LibraryModal 

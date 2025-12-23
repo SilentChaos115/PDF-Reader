@@ -54,12 +54,18 @@ export const saveFileToLibrary = async (file: File, thumbnail?: string): Promise
     existingRequest.onsuccess = () => resolve(existingRequest.result);
   });
 
+  const now = Date.now();
+
   const item = {
     id,
     name: file.name,
     size: file.size,
     type: file.type,
-    date: Date.now(),
+    // Use file timestamp if available, but fallback to now.
+    date: (file.lastModified) ? file.lastModified : now,
+    // Critical for mobile: Add a specific import timestamp for consistent 'Recent' sorting
+    // regardless of OS file system behavior
+    dateAdded: now,
     data: file,
     thumbnail: thumbnail || '',
     sectionId: existing?.sectionId || 'uncategorized'
@@ -126,17 +132,54 @@ export const clearTextCache = async (): Promise<void> => {
   return new Promise((resolve) => { tx.oncomplete = () => resolve(); });
 };
 
-export const resetAppDatabase = async (): Promise<void> => {
-  const db = await openDB();
-  db.close();
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(DB_NAME);
-    request.onsuccess = () => {
-      localStorage.clear();
-      resolve();
-    };
-    request.onerror = () => reject();
-  });
+export const resetAppDatabase = async (): Promise<boolean> => {
+  console.log("Initiating Targeted Wipe...");
+  
+  try {
+    // 1. Close active DB connections FIRST to release file locks
+    try {
+      const db = await openDB();
+      db.close();
+    } catch (e) { /* ignore */ }
+
+    // 2. Targeted Wipe: Clear Storage APIs
+    localStorage.clear();
+    sessionStorage.clear();
+
+    // 3. Targeted Wipe: Explicitly delete the specific IndexedDB
+    await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase(DB_NAME);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+        req.onblocked = () => {
+            console.warn("DB Delete Blocked - proceeding with partial reset");
+            resolve();
+        };
+    });
+
+    // 4. Cache Purge: Only delete non-essential caches
+    // We preserve 'zenreader-v1' to keep the app shell intact (preventing offline breakage)
+    if ('caches' in window) {
+      try {
+        const keys = await caches.keys();
+        const appShellCache = 'zenreader-v1';
+        await Promise.all(keys.map(key => {
+            if (key !== appShellCache) {
+                return caches.delete(key);
+            }
+            return Promise.resolve(false);
+        }));
+      } catch (e) { console.warn("Cache clear warning", e); }
+    }
+    
+    // NOTE: We do NOT unregister Service Workers or reload the page here.
+    // State reset is handled by the App component.
+    return true;
+
+  } catch (error) {
+    console.error("Deep Wipe failed:", error);
+    return false;
+  }
 };
 
 export const getRecentFiles = async (): Promise<any[]> => {
@@ -147,8 +190,8 @@ export const getRecentFiles = async (): Promise<any[]> => {
   return new Promise((resolve) => {
     request.onsuccess = () => {
       const results = request.result || [];
-      // Sort by interaction date descending
-      resolve(results.sort((a, b) => b.date - a.date));
+      // Default Sort by dateAdded (stable import time) descending
+      resolve(results.sort((a, b) => (b.dateAdded || b.date) - (a.dateAdded || a.date)));
     };
   });
 };
